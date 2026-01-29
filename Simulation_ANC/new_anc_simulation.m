@@ -12,6 +12,8 @@ function y = make_exact_length(x, N)
     end
 end
 
+addpath(genpath('RIR_Generator'));
+addpath(genpath('ReTM'));
 
 %% RIR Generation
 
@@ -130,8 +132,8 @@ end
 %% Generate Primary source signal -  Tuning Stage
 
 % Load audio files
-[x1, fs1] = audioread('factory1.wav');
-[x2, fs2] = audioread('factory2.wav');
+[x1, fs1] = audioread('Sound_sources/factory1.wav');
+[x2, fs2] = audioread('Sound_sources/factory2.wav');
 
 % Convert to mono if needed
 if size(x1,2) > 1
