@@ -30,14 +30,29 @@ mon_gain = 1 ./ (rms(mon_sig,1) + 1e-12);      % [1 x M]
 RVM = squeeze(retm_est(:,1,:,:));         % -> [F x V x M]
 V = size(RVM,2);
 
-%% % ---- Build frequency responses of primary and secondary paths
-Hpm = zeros(F, M, K);                      % [F x M x K]
-Hsm = zeros(F, M, Lspk);                   % [F x M x L]
+%% Build frequency responses of primary and secondary paths
+X = cell(K,1);
+for k = 1:K
+    X{k} = stft(src(:,k), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');  % [F x nFrames]
+end
+nFrames = size(X{1},2);
+
+% ---- FFT of paths
+Hpm  = zeros(F, M, K);
+Hsm  = zeros(F, M, Lspk);
+Hpee = zeros(F, Neval, K);
+Hsee = zeros(F, Neval, Lspk);
 
 for k = 1:K
     for m = 1:M
         H = fft(h_pm(:,m,k), nfft);
         Hpm(:,m,k) = H(1:F);
+    end
+    for p = 1:Neval
+        H = fft(h_pee(:,p,k), nfft);
+        Hpee(:,p,k) = H(1:F);
     end
 end
 
@@ -45,5 +60,27 @@ for l = 1:Lspk
     for m = 1:M
         H = fft(h_sm(:,m,l), nfft);
         Hsm(:,m,l) = H(1:F);
+    end
+    for p = 1:Neval
+        H = fft(h_see(:,p,l), nfft);
+        Hsee(:,p,l) = H(1:F);
+    end
+end
+
+%% monitoring mic signal from primary to monitoring mics
+
+% ---- Primary contribution at monitoring mics: Dm_tf
+Dm_tf = zeros(F, nFrames, M);
+for k = 1:K
+    for m = 1:M
+        Dm_tf(:,:,m) = Dm_tf(:,:,m) + Hpm(:,m,k) .* X{k};
+    end
+end
+
+% ---- Primary contribution at evaluation mics (ANC OFF baseline): Deval_tf_off
+Deval_tf_off = zeros(F, nFrames, Neval);
+for k = 1:K
+    for p = 1:Neval
+        Deval_tf_off(:,:,p) = Deval_tf_off(:,:,p) + Hpee(:,p,k) .* X{k};
     end
 end
