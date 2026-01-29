@@ -372,6 +372,20 @@ grid on;
 xlabel('Time (s)'); ylabel('Error');
 title(sprintf('Estimation Error (True - Estimated), Mic %d', ch));
 
-xlim([100 1000]);  
+xlim([10 50]); 
 
+figure;
+plot(t, err_sig(:,ch));
+grid on;
+xlabel('Time (s)'); ylabel('Error Signal');
+title(sprintf('Actual Error Signal, Mic %d', ch));
+xlim([10 50]);
+
+
+figure;
+plot(t, err_hat(:,ch));
+grid on;
+xlabel('Time (s)'); ylabel('Estimated Error Signal');
+title(sprintf('Estimated Error Signal, Mic %d', ch));
+xlim([10 50]);
 
