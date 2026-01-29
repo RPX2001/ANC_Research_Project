@@ -69,7 +69,7 @@ end
 
 %% monitoring mic signal from primary to monitoring mics
 
-% ---- Primary contribution at monitoring mics: Dm_tf
+% Primary contribution at monitoring mics: Dm_tf
 Dm_tf = zeros(F, nFrames, M);
 for k = 1:K
     for m = 1:M
@@ -77,10 +77,133 @@ for k = 1:K
     end
 end
 
-% ---- Primary contribution at evaluation mics (ANC OFF baseline): Deval_tf_off
+% Primary contribution at evaluation mics (ANC OFF baseline): Deval_tf_off
 Deval_tf_off = zeros(F, nFrames, Neval);
 for k = 1:K
     for p = 1:Neval
         Deval_tf_off(:,:,p) = Deval_tf_off(:,:,p) + Hpee(:,p,k) .* X{k};
     end
 end
+
+%% ANC parameters
+
+% Adaptive filter W(f,l,k)
+W = zeros(F, Lspk, K);
+
+% Store virtual error before/after + evaluation mics after
+EV0_tf = zeros(F, nFrames, V);
+EV_tf  = zeros(F, nFrames, V);
+Deval_tf_on = zeros(F, nFrames, Neval);
+
+% FxLMS stability settings (full-band needs smaller mu)
+mu = 1e-3;              % start here for full-band
+pwr_floor = 1e-3;       % prevents huge steps
+
+adapt_bins = 2:(F-1);   % cover all the frequency range for the anc cancellation
+
+%% Main ANC Loop
+
+for tfrm = 1:nFrames
+    for fbin = 1:F
+
+        % Xvec [K x 1]
+        Xvec = zeros(K,1);
+        for k = 1:K
+            Xvec(k) = X{k}(fbin,tfrm);
+        end
+
+        % Speaker outputs Y [L x 1]
+        Y = zeros(Lspk,1);
+        for l = 1:Lspk
+            Y(l) = squeeze(W(fbin,l,:)).' * Xvec;
+        end
+
+        % Monitoring residual eM = dM + S_M Y
+        dMf = squeeze(Dm_tf(fbin,tfrm,:));     % [M x 1]
+        SMf = squeeze(Hsm(fbin,:,:));          % [M x L]
+        eMf = dMf + SMf * Y;                   % [M x 1]
+
+        % Monitoring normalization BEFORE ReTM (must match tuning)
+        % Apply per-channel gain (vector) consistently
+        eMfN = eMf .* mon_gain(:);
+
+        % Virtual error (before) and (after)
+        Rf = squeeze(RVM(fbin,:,:));           % [V x M]
+        EV0_tf(fbin,tfrm,:) = Rf * (dMf .* mon_gain(:)); % virtual error without secondary speakers
+        eVf = Rf * eMfN;
+        EV_tf(fbin,tfrm,:) = eVf;              % estimated error signal
+
+        % Evaluation mics (ANC ON): primary + secondary
+        % e_eval = P_eval*X + S_eval*Y
+        for p = 1:Neval
+            primPart = 0;
+            for k = 1:K
+                primPart = primPart + Hpee(fbin,p,k) * Xvec(k);
+            end
+            secPart = squeeze(Hsee(fbin,p,:)).' * Y;
+            Deval_tf_on(fbin,tfrm,p) = primPart + secPart;
+        end
+
+        % Weight update only for adapt bins
+        if fbin >= adapt_bins(1) && fbin <= adapt_bins(end)
+
+            % Gradient: g = S_M^H * R^H * eV
+            g = (SMf') * (Rf') * eVf;          % [L x 1]
+
+            % NLMS normalization
+            pwr = real(Xvec' * Xvec);
+            pwr = max(pwr, pwr_floor);
+
+            for l = 1:Lspk
+                for k = 1:K
+                    W(fbin,l,k) = W(fbin,l,k) - (mu/pwr) * conj(Xvec(k)) * g(l);
+                end
+            end
+        end
+
+    end
+end
+
+%% ISTFT
+
+ev_before = zeros(Ns, V);
+ev_after  = zeros(Ns, V);
+
+for v = 1:V
+    ev_before(:,v) = istft(EV0_tf(:,:,v), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+    ev_after(:,v)  = istft(EV_tf(:,:,v), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+end
+
+% ---- ISTFT: evaluation mics (ANC OFF / ON)
+eval_off = zeros(Ns, Neval);
+eval_on  = zeros(Ns, Neval);
+
+for p = 1:Neval
+    eval_off(:,p) = istft(Deval_tf_off(:,:,p), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+    eval_on(:,p)  = istft(Deval_tf_on(:,:,p), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+end
+
+% Fix lengths
+ev_before = ev_before(1:Ns,:);
+ev_after  = ev_after(1:Ns,:);
+eval_off  = eval_off(1:Ns,:);
+eval_on   = eval_on(1:Ns,:);
+%% plot
+
+t = (0:Ns-1)'/fs;
+pPlot = 1;
+
+figure;
+plot(t, eval_off(:,pPlot)); hold on;
+plot(t, eval_on(:,pPlot));
+grid on; xlabel('Time (s)'); ylabel('Amplitude');
+legend('ANC OFF (eval mic)','ANC ON (eval mic)');
+title(sprintf('Evaluation mic %d: time domain', pPlot));

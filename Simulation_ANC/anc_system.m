@@ -69,7 +69,7 @@ end
 
 %% monitoring mic signal from primary to monitoring mics
 
-% ---- Primary contribution at monitoring mics: Dm_tf
+% Primary contribution at monitoring mics: Dm_tf
 Dm_tf = zeros(F, nFrames, M);
 for k = 1:K
     for m = 1:M
@@ -77,7 +77,7 @@ for k = 1:K
     end
 end
 
-% ---- Primary contribution at evaluation mics (ANC OFF baseline): Deval_tf_off
+% Primary contribution at evaluation mics (ANC OFF baseline): Deval_tf_off
 Deval_tf_off = zeros(F, nFrames, Neval);
 for k = 1:K
     for p = 1:Neval
@@ -123,15 +123,15 @@ for tfrm = 1:nFrames
         SMf = squeeze(Hsm(fbin,:,:));          % [M x L]
         eMf = dMf + SMf * Y;                   % [M x 1]
 
-        % ===== Monitoring normalization BEFORE ReTM (must match tuning) =====
+        % Monitoring normalization BEFORE ReTM (must match tuning)
         % Apply per-channel gain (vector) consistently
         eMfN = eMf .* mon_gain(:);
 
         % Virtual error (before) and (after)
         Rf = squeeze(RVM(fbin,:,:));           % [V x M]
-        EV0_tf(fbin,tfrm,:) = Rf * (dMf .* mon_gain(:));
+        EV0_tf(fbin,tfrm,:) = Rf * (dMf .* mon_gain(:)); % virtual error without secondary speakers
         eVf = Rf * eMfN;
-        EV_tf(fbin,tfrm,:) = eVf;
+        EV_tf(fbin,tfrm,:) = eVf;              % estimated error signal
 
         % Evaluation mics (ANC ON): primary + secondary
         % e_eval = P_eval*X + S_eval*Y
@@ -144,7 +144,7 @@ for tfrm = 1:nFrames
             Deval_tf_on(fbin,tfrm,p) = primPart + secPart;
         end
 
-        % ===== Weight update only for adapt bins =====
+        % Weight update only for adapt bins
         if fbin >= adapt_bins(1) && fbin <= adapt_bins(end)
 
             % Gradient: g = S_M^H * R^H * eV
@@ -164,4 +164,79 @@ for tfrm = 1:nFrames
     end
 end
 
+%% ISTFT
 
+ev_before = zeros(Ns, V);
+ev_after  = zeros(Ns, V);
+
+for v = 1:V
+    ev_before(:,v) = istft(EV0_tf(:,:,v), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+    ev_after(:,v)  = istft(EV_tf(:,:,v), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+end
+
+% ---- ISTFT: evaluation mics (ANC OFF / ON)
+eval_off = zeros(Ns, Neval);
+eval_on  = zeros(Ns, Neval);
+
+for p = 1:Neval
+    eval_off(:,p) = istft(Deval_tf_off(:,:,p), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+    eval_on(:,p)  = istft(Deval_tf_on(:,:,p), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+end
+
+% Fix lengths
+ev_before = ev_before(1:Ns,:);
+ev_after  = ev_after(1:Ns,:);
+eval_off  = eval_off(1:Ns,:);
+eval_on   = eval_on(1:Ns,:);
+%% plot
+
+t = (0:Ns-1)'/fs;
+pPlot = 1;
+
+figure;
+plot(t, eval_off(:,pPlot)); hold on;
+plot(t, eval_on(:,pPlot));
+grid on; xlabel('Time (s)'); ylabel('Amplitude');
+legend('ANC OFF (eval mic)','ANC ON (eval mic)');
+title(sprintf('Evaluation mic %d: time domain', pPlot));
+
+% PSD plot and noise reduction
+nwel=4096; nover=round(0.75*nwel); nfftW=4096;
+trim=2*wlen;
+
+xb = eval_off(trim:end-trim, pPlot);
+xa = eval_on( trim:end-trim, pPlot);
+
+[Pb,fpsd] = pwelch(xb, hann(nwel,'periodic'), nover, nfftW, fs);
+[Pa,~]    = pwelch(xa, hann(nwel,'periodic'), nover, nfftW, fs);
+
+Pb_dB = 10*log10(max(Pb,1e-20));
+Pa_dB = 10*log10(max(Pa,1e-20));
+NR = Pb_dB - Pa_dB;
+
+% mask bins with no energy
+thr = max(Pb_dB) - 40;
+mask = Pb_dB > thr;
+NR(~mask) = NaN;
+NR = min(max(NR,-20),40);
+
+figure;
+plot(fpsd, Pb_dB); hold on; plot(fpsd, Pa_dB);
+grid on; xlim([0 fs/2]);
+xlabel('Hz'); ylabel('PSD (dB/Hz)');
+legend('OFF','ON');
+title(sprintf('Evaluation mic %d: PSD', pPlot));
+
+figure;
+plot(fpsd, NR, 'LineWidth', 1.2);
+grid on; xlim([0 fs/2]);
+xlabel('Hz'); ylabel('Noise reduction (dB)');
+title(sprintf('Evaluation mic %d: Noise reduction vs frequency', pPlot));
