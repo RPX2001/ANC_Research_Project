@@ -20,6 +20,7 @@ K  = size(src,2);                 % #reference channels (primary sources 2)
 M  = size(h_pm,2);                % #monitoring mics (8)
 Lspk = size(h_sm,3);              % #secondary speakers (2)
 F = nfft/2 + 1;                   % frequency bins
+Neval = size(h_pee,2);            % # of evaluation mics - 2
 
 
 % normalizing coefficients
@@ -207,6 +208,7 @@ plot(t, eval_on(:,pPlot));
 grid on; xlabel('Time (s)'); ylabel('Amplitude');
 legend('ANC OFF (eval mic)','ANC ON (eval mic)');
 title(sprintf('Evaluation mic %d: time domain', pPlot));
+xlim([10 40]); 
 
 % PSD plot and noise reduction
 nwel=4096; nover=round(0.75*nwel); nfftW=4096;
@@ -223,10 +225,10 @@ Pa_dB = 10*log10(max(Pa,1e-20));
 NR = Pb_dB - Pa_dB;
 
 % mask bins with no energy
-thr = max(Pb_dB) - 40;
+thr = max(Pb_dB) - 100; % 40
 mask = Pb_dB > thr;
 NR(~mask) = NaN;
-NR = min(max(NR,-20),40);
+NR = min(max(NR,-30),40); % 20
 
 figure;
 plot(fpsd, Pb_dB); hold on; plot(fpsd, Pa_dB);
