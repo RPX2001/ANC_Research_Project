@@ -30,7 +30,7 @@ mon_gain = 1 ./ (rms(mon_sig,1) + 1e-12);      % [1 x M]
 RVM = squeeze(retm_est(:,1,:,:));         % -> [F x V x M]
 V = size(RVM,2);
 
-%% Build frequency responses of primary and secondary paths
+%% % ---- Build frequency responses of primary and secondary paths
 Hpm = zeros(F, M, K);                      % [F x M x K]
 Hsm = zeros(F, M, Lspk);                   % [F x M x L]
 
