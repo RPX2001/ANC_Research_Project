@@ -15,6 +15,18 @@ fs_primary = 8000;
 T_duration = 60;
 Ns_target = fs_primary * T_duration;
 
+% ================= CONTROL STAGE TIME WINDOW =================
+t_start = 20;              % seconds
+t_end   = 40;              % seconds
+n_start = floor(t_start*fs) + 1;
+n_end   = floor(t_end*fs);
+
+% Keep a copy of full source if you need it later
+src_full = src;
+
+% Crop to 10–50 s for control stage ONLY
+src = src_full(n_start:n_end, :);
+
 Ns = size(src,1);                 % Size of the total samples
 K  = size(src,2);                 % #reference channels (primary sources 2)
 M  = size(h_pm,2);                % #monitoring mics (8)
@@ -27,8 +39,8 @@ W_nums = 64;                      % filter taps
 x_hist = zeros(W_nums, K);          % last 64 samples per reference channel
 
 % normalizing coefficients
-ref_gain = 1 ./ (rms(src,1) + 1e-12);          % [1 x K]
-mon_gain = 1 ./ (rms(mon_sig,1) + 1e-12);      % [1 x M]
+ref_gain = ones(1,K);      % no reference normalization
+mon_gain = ones(1,M);      % no monitoring normalization
 
 % dimension change for ReTM
 RVM = squeeze(retm_est(:,1,:,:));         % -> [F x V x M]
@@ -113,7 +125,12 @@ adapt_bins = 2:(F-1);   % cover all the frequency range for the anc cancellation
 
 %% Main ANC Loop
 
-for tfrm = 1:nFrames
+% Skip first/last frames (optional safety)
+skipFrames = 60; % try 5..20
+tfrm_start = 1 + skipFrames;
+tfrm_end   = nFrames - skipFrames;
+
+for tfrm = tfrm_start:tfrm_end
 
     % (1) build Xhist + Yf for this frame (code above)
 
@@ -123,7 +140,7 @@ for tfrm = 1:nFrames
     
     % update time-history buffer using the *time-domain* normalized reference
     for n = n0:n1
-        x_hist = [x_hist(2:end,:); src(n,:) .* ref_gain];   % shift + append (1xK)
+        x_hist = [x_hist(2:end,:); src(n,:)];    % no scaling
     end
     
     % FFT of history (zero-pad to nfft)
@@ -150,13 +167,14 @@ for tfrm = 1:nFrames
     end
 
     % (3) Apply monitoring normalization before ReTM
-    eM_tf_frameN = eM_tf_frame .* reshape(mon_gain, [1 M]);         % [F x M]
+    eM_tf_frameN = eM_tf_frame;        % [F x M]
 
     % (4) Virtual error TF: EV_tf(:,tfrm,:) = RVM * eM
     for fbin = 1:F
         Rf = squeeze(RVM(fbin,:,:));            % [V x M]
         EV_tf(fbin,tfrm,:) = Rf * eM_tf_frameN(fbin,:).';
-        EV0_tf(fbin,tfrm,:) = Rf * ( squeeze(Dm_tf(fbin,tfrm,:)) .* mon_gain(:) );
+        % EV0_tf(fbin,tfrm,:) = Rf * ( squeeze(Dm_tf(fbin,tfrm,:)) .* mon_gain(:) );
+        EV0_tf(fbin,tfrm,:) = Rf * squeeze(Dm_tf(fbin,tfrm,:));
     end
 
     % (5) Evaluation mics TF (ANC ON)
@@ -202,18 +220,6 @@ end
 
 %% ISTFT
 
-ev_before = zeros(Ns, V);
-ev_after  = zeros(Ns, V);
-
-for v = 1:V
-    ev_before(:,v) = istft(EV0_tf(:,:,v), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided');
-    ev_after(:,v)  = istft(EV_tf(:,:,v), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided');
-end
-
 % ---- ISTFT: evaluation mics (ANC OFF / ON)
 eval_off = zeros(Ns, Neval);
 eval_on  = zeros(Ns, Neval);
@@ -228,13 +234,11 @@ for p = 1:Neval
 end
 
 % Fix lengths
-ev_before = ev_before(1:Ns,:);
-ev_after  = ev_after(1:Ns,:);
 eval_off  = eval_off(1:Ns,:);
 eval_on   = eval_on(1:Ns,:);
 %% plot
 
-t = (0:Ns-1)'/fs;
+t = ((n_start-1) + (0:Ns-1))' / fs;   % now t runs from 10 to 50 seconds
 pPlot = 1;
 
 figure;
@@ -243,7 +247,7 @@ plot(t, eval_on(:,pPlot));
 grid on; xlabel('Time (s)'); ylabel('Amplitude');
 legend('ANC OFF (eval mic)','ANC ON (eval mic)');
 title(sprintf('Evaluation mic %d: time domain', pPlot));
-xlim([10 40]); 
+xlim([25 35]);
 
 % PSD plot and noise reduction
 nwel=4096; nover=round(0.75*nwel); nfftW=4096;
