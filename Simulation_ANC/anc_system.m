@@ -118,12 +118,20 @@ EV_tf  = zeros(F, nFrames, V);
 Deval_tf_on = zeros(F, nFrames, Neval);
 
 % FxLMS stability settings (full-band needs smaller mu)
-mu = 1e-3;              % start here for full-band
+mu = 5e-4;              % start here for full-band
 pwr_floor = 1e-3;       % prevents huge steps
 
 adapt_bins = 2:(F-1);   % cover all the frequency range for the anc cancellation
 
 %% Main ANC Loop
+
+% Stack references into one array for easy access:
+% Xmat: [F x nFrames x K]
+Xmat = zeros(F, nFrames, K);
+for k = 1:K
+    Xmat(:,:,k) = X{k};
+end
+
 
 % Skip first/last frames (optional safety)
 skipFrames = 60; % try 5..20
@@ -132,110 +140,115 @@ tfrm_end   = nFrames - skipFrames;
 
 for tfrm = tfrm_start:tfrm_end
 
-    % (1) build Xhist + Yf for this frame (code above)
+    % Reference at this frame: Xf(k) for each bin
+    % We compute speaker outputs for ALL frequency bins:
+    Yf = zeros(F, Lspk);   % [F x L]
 
-    % --- time indices for this frame hop (overlap-save style) ---
-    n0 = (tfrm-1)*hopS + 1;
-    n1 = min(n0 + hopS - 1, Ns);
-    
-    % update time-history buffer using the *time-domain* normalized reference
-    for n = n0:n1
-        x_hist = [x_hist(2:end,:); src(n,:)];    % no scaling
-    end
-    
-    % FFT of history (zero-pad to nfft)
-    Xhist = zeros(F,K);
-    for k = 1:K
-        Xk_full = fft([x_hist(:,k); zeros(nfft-W_nums,1)], nfft);
-        Xhist(:,k) = Xk_full(1:F);
-    end
-    
-    % --- compute secondary speaker spectra using FIR frequency responses ---
-    Yf = zeros(F, Lspk);          % spectrum at each speaker (for this frame)
     for l = 1:Lspk
-        tmp = 0;
+        acc = zeros(F,1);
         for k = 1:K
-            tmp = tmp + squeeze(Wf(:,l,k)) .* Xhist(:,k);
+            acc = acc + Wf(:,l,k) .* Xmat(:,tfrm,k);  % elementwise over F
         end
-        Yf(:,l) = tmp;
+        Yf(:,l) = acc;
     end
 
-    % (2) Build monitoring TF residual for ALL f at once
-    eM_tf_frame = squeeze(Dm_tf(:,tfrm,:));     % [F x M]
+    % Monitoring residual at ALL bins: eM = dM + S_M * y
+    eM_tf_frame = squeeze(Dm_tf(:,tfrm,:));   % [F x M]
     for l = 1:Lspk
-        eM_tf_frame = eM_tf_frame + squeeze(Hsm(:,:,l)) .* Yf(:,l);  % broadcasting
+        eM_tf_frame = eM_tf_frame + squeeze(Hsm(:,:,l)) .* Yf(:,l); % [F x M]
     end
 
-    % (3) Apply monitoring normalization before ReTM
-    eM_tf_frameN = eM_tf_frame;        % [F x M]
-
-    % (4) Virtual error TF: EV_tf(:,tfrm,:) = RVM * eM
+    % Virtual error estimate: eV = RVM * eM  (per frequency bin)
     for fbin = 1:F
-        Rf = squeeze(RVM(fbin,:,:));            % [V x M]
-        EV_tf(fbin,tfrm,:) = Rf * eM_tf_frameN(fbin,:).';
-        % EV0_tf(fbin,tfrm,:) = Rf * ( squeeze(Dm_tf(fbin,tfrm,:)) .* mon_gain(:) );
-        EV0_tf(fbin,tfrm,:) = Rf * squeeze(Dm_tf(fbin,tfrm,:));
+        Rf = squeeze(RVM(fbin,:,:));                 % [V x M]
+
+        dMf = squeeze(Dm_tf(fbin,tfrm,:));           % [M x 1]
+        EV0_tf(fbin,tfrm,:) = Rf * dMf;              % baseline (ANC OFF)
+
+        eMf = eM_tf_frame(fbin,:).';                 % [M x 1]
+        eVf = Rf * eMf;                              % [V x 1]
+        EV_tf(fbin,tfrm,:) = eVf;
     end
 
-    % (5) Evaluation mics TF (ANC ON)
+    % Evaluation mics (ANC ON): Deval = P_eval*X + S_eval*Y
     Deval_frame = squeeze(Deval_tf_off(:,tfrm,:));   % [F x Neval]
     for l = 1:Lspk
         Deval_frame = Deval_frame + squeeze(Hsee(:,:,l)) .* Yf(:,l); % [F x Neval]
     end
     Deval_tf_on(:,tfrm,:) = Deval_frame;
 
-    % (6) FxLMS update for FIR filters (frequency domain)
-    for fbin = 2:(F-1)
+    % --- STFT-domain FxLMS update (paper-style) ---
+    for fbin = adapt_bins
 
-        Rf  = squeeze(RVM(fbin,:,:));                  % [V x M]
-        SMf = squeeze(Hsm(fbin,:,:));                  % [M x L]
-        eVf = squeeze(EV_tf(fbin,tfrm,:));             % [V x 1]
+        % reference vector x(f,t) = [X1; X2; ... XK]
+        Xvec = squeeze(Xmat(fbin,tfrm,:));        % [K x 1]
 
-        g = (SMf') * (Rf') * eVf;                      % [L x 1]
-
-        pwr = sum(abs(Xhist(fbin,:)).^2);
+        % compute normalization power
+        pwr = sum(abs(Xvec).^2);
         pwr = max(pwr, pwr_floor);
 
+        % get error vector at virtual mics
+        eVf = squeeze(EV_tf(fbin,tfrm,:));        % [V x 1]
+
+        % Secondary path to monitoring mics (M x L)
+        SMf = squeeze(Hsm(fbin,:,:));             % [M x L]
+
+        % ReTM mapping (V x M)
+        Rf = squeeze(RVM(fbin,:,:));              % [V x M]
+
+        % gradient term per speaker:
+        % g = S_M^H * R^H * eV
+        g = (SMf') * (Rf') * eVf;                 % [L x 1]
+
+        % Update weights
         for l = 1:Lspk
             for k = 1:K
-                Wf(fbin,l,k) = Wf(fbin,l,k) - (mu/pwr) * conj(Xhist(fbin,k)) * g(l);
+                Wf(fbin,l,k) = Wf(fbin,l,k) - (mu/pwr) * conj(Xvec(k)) * g(l);
             end
         end
     end
 
-    % (7) Convert Wf -> time-domain FIR, keep only 64 taps
-    for l = 1:Lspk
-        for k = 1:K
-            Wfull = [Wf(:,l,k); conj(Wf(end-1:-1:2,l,k))];  % build full spectrum
-            wtmp = real(ifft(Wfull, nfft));                  % time FIR
-            w_td(l,k,:) = wtmp(1:W_nums);                    % keep 64 taps
-            tmp = fft([squeeze(w_td(l,k,:)); zeros(nfft-W_nums,1)], nfft);  % 2048x1
-            Wf(:,l,k) = tmp(1:F);                                          % 1025x1
-            Wf(:,l,k) = Wf(1:F,l,k);
-        end
-    end
-
 end
+
+% Fill skipped frames to avoid ISTFT artifacts
+EV_tf(:,1:tfrm_start-1,:) = EV0_tf(:,1:tfrm_start-1,:);
+EV_tf(:,tfrm_end+1:end,:) = EV0_tf(:,tfrm_end+1:end,:);
+Deval_tf_on(:,1:tfrm_start-1,:) = Deval_tf_off(:,1:tfrm_start-1,:);
+Deval_tf_on(:,tfrm_end+1:end,:) = Deval_tf_off(:,tfrm_end+1:end,:);
+
+
 
 
 %% ISTFT
 
-% ---- ISTFT: evaluation mics (ANC OFF / ON)
-eval_off = zeros(Ns, Neval);
-eval_on  = zeros(Ns, Neval);
+force_len = @(x,N) (length(x)>=N)*x(1:N) + (length(x)<N)*[x(:); zeros(N-length(x),1)];
 
-for p = 1:Neval
-    eval_off(:,p) = istft(Deval_tf_off(:,:,p), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
+% ISTFT virtual error
+ev_before = zeros(Ns, V);
+ev_after  = zeros(Ns, V);
+for v = 1:V
+    tmp = istft(EV0_tf(:,:,v), fs, 'Window', win, 'OverlapLength', wlen-hop, ...
         'FFTLength', nfft, 'FrequencyRange', 'onesided');
-    eval_on(:,p)  = istft(Deval_tf_on(:,:,p), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
+    ev_before(:,v) = force_len(tmp, Ns);
+
+    tmp = istft(EV_tf(:,:,v), fs, 'Window', win, 'OverlapLength', wlen-hop, ...
         'FFTLength', nfft, 'FrequencyRange', 'onesided');
+    ev_after(:,v) = force_len(tmp, Ns);
 end
 
-% Fix lengths
-eval_off  = eval_off(1:Ns,:);
-eval_on   = eval_on(1:Ns,:);
+% ISTFT evaluation mics
+eval_off = zeros(Ns, Neval);
+eval_on  = zeros(Ns, Neval);
+for p = 1:Neval
+    tmp = istft(Deval_tf_off(:,:,p), fs, 'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+    eval_off(:,p) = force_len(tmp, Ns);
+
+    tmp = istft(Deval_tf_on(:,:,p), fs, 'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided');
+    eval_on(:,p) = force_len(tmp, Ns);
+end
+
 %% plot
 
 t = ((n_start-1) + (0:Ns-1))' / fs;   % now t runs from 10 to 50 seconds
@@ -267,7 +280,7 @@ NR = Pb_dB - Pa_dB;
 thr = max(Pb_dB) - 100; % 40
 mask = Pb_dB > thr;
 NR(~mask) = NaN;
-NR = min(max(NR,-30),40); % 20
+NR = min(max(NR,-30),60); % 20
 
 figure;
 plot(fpsd, Pb_dB); hold on; plot(fpsd, Pa_dB);
