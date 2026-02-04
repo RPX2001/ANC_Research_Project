@@ -121,7 +121,9 @@ Deval_tf_on = zeros(F, nFrames, Neval);
 mu = 5e-4;              % start here for full-band
 pwr_floor = 1e-3;       % prevents huge steps
 
-adapt_bins = 2:(F-1);   % cover all the frequency range for the anc cancellation
+adapt_bins = 20:600;   % cover all the frequency range for the anc cancellation
+%f_axis = (0:F-1)' * fs/nfft;
+%adapt_bins = find(f_axis >= 50 & f_axis <= 600);
 
 %% Main ANC Loop
 
@@ -269,6 +271,9 @@ trim=2*wlen;
 xb = eval_off(trim:end-trim, pPlot);
 xa = eval_on( trim:end-trim, pPlot);
 
+%xb = ev_before(trim:end-trim, pPlot);
+%xa = ev_after( trim:end-trim, pPlot);
+
 [Pb,fpsd] = pwelch(xb, hann(nwel,'periodic'), nover, nfftW, fs);
 [Pa,~]    = pwelch(xa, hann(nwel,'periodic'), nover, nfftW, fs);
 
@@ -286,11 +291,13 @@ figure;
 plot(fpsd, Pb_dB); hold on; plot(fpsd, Pa_dB);
 grid on; xlim([0 fs/2]);
 xlabel('Hz'); ylabel('PSD (dB/Hz)');
-legend('OFF','ON');
+legend('ANC OFF','ANC ON');
 title(sprintf('Evaluation mic %d: PSD', pPlot));
+xlim([20 600]);
 
 figure;
 plot(fpsd, NR, 'LineWidth', 1.2);
 grid on; xlim([0 fs/2]);
 xlabel('Hz'); ylabel('Noise reduction (dB)');
 title(sprintf('Evaluation mic %d: Noise reduction vs frequency', pPlot));
+xlim([20 600]);

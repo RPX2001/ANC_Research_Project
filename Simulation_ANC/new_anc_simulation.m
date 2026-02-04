@@ -164,7 +164,7 @@ fprintf('Primary sources ready: %d samples @ %d Hz\n', size(src,1), fs);
 sec_noise = randn(Ns, num_sec_src);
 
 % Band-limit to control band
-band = [1500 2400];
+band = [20 600];
 for l = 1:num_sec_src
     sec_noise(:,l) = bandpass(sec_noise(:,l), band, fs);
 end
