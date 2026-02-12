@@ -35,11 +35,11 @@ num_err_mics = 4;           % number of error mics
 num_eval_err_mics = 2;      % number of evaluation error mics
 
 %fs = 8000;                  % secondary source target sampling rate
-Ttune = 60;                 % Duration of the signal      
+Ttune = 100;                 % Duration of the signal      
 Ns = fs*Ttune;              % total samples in secondary source                                        
 
 %fs_target = 8000;           % primary source target sampling rate
-T = 60;                     % primary source signal duration seconds
+T = 100;                     % primary source signal duration seconds
 Ns_target = fs * T;         % primary source total samples
 
 wlen = 1024;
@@ -152,8 +152,8 @@ x1 = x1 - mean(x1);
 x2 = x2 - mean(x2);
 
 % Normalize power (do NOT normalize peak)
-x1 = x1 / rms(x1);
-x2 = x2 / rms(x2);
+%x1 = x1 / rms(x1);
+%x2 = x2 / rms(x2);
 
 % Pack as primary sources
 src = [x1, x2];    % size: [Ns_target x 2]
@@ -170,11 +170,11 @@ for l = 1:num_sec_src
 end
 
 % Normalize (important)
-sec_noise = sec_noise ./ (rms(sec_noise,1) + 1e-8);
+%sec_noise = sec_noise ./ (rms(sec_noise,1) + 1e-8);
 
 % Scale: secondary noise should be weaker than primary
-sec_gain = 0.3;                   
-sec_noise = sec_gain * sec_noise;
+%sec_gain = 0.3;                   
+%sec_noise = sec_gain * sec_noise;
 
 %% Generate Monitoring microphone signals - Tuning Stage
 
@@ -389,3 +389,20 @@ xlabel('Time (s)'); ylabel('Estimated Error Signal');
 title(sprintf('Estimated Error Signal, Mic %d', ch));
 xlim([10 50]);
 
+%% 
+
+t1 = (0:Ns-1)/fs;
+figure;
+plot(t1, src(:,ch));
+grid on;
+xlabel('Time (s)'); ylabel('Source Signal');
+title(sprintf('Source signal, Mic %d', ch));
+
+
+t = 1:Ns;
+figure;
+plot(t, sec_noise(:,1));
+grid on;
+xlabel('Time (s)'); ylabel('Secondary Source Signal');
+title(sprintf('Secondary Source signal, Mic %d', 1));
+%xlim([10 50]);

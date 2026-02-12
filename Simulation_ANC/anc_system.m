@@ -9,15 +9,43 @@ function y = make_exact_length(x, N)
         y = y(1:N);
     end
 end
+
+%% Generate Source signal
+
+% Load audio files
+[x1, fs1] = audioread('Sound_sources/factory1.wav');
+[x2, fs2] = audioread('Sound_sources/factory2.wav');
+
+% Convert to mono if needed
+if size(x1,2) > 1
+    x1 = mean(x1,2);
+end
+if size(x2,2) > 1
+    x2 = mean(x2,2);
+end
+
+% Make exactly 60 seconds
+x1 = make_exact_length(x1, Ns_target);
+x2 = make_exact_length(x2, Ns_target);
+
+% Remove DC (important for ANC stability)
+x1 = x1 - mean(x1);
+x2 = x2 - mean(x2);
+
+% Pack as primary sources
+src = [x1, x2];    % size: [Ns_target x 2]
+
+fprintf('Primary sources ready: %d samples @ %d Hz\n', size(src,1), fs);
+
 %% Parameters
 
 fs_primary = 8000;
-T_duration = 60;
+T_duration = 100;
 Ns_target = fs_primary * T_duration;
 
 % ================= CONTROL STAGE TIME WINDOW =================
-t_start = 20;              % seconds
-t_end   = 40;              % seconds
+t_start = 30;              % seconds
+t_end   = 70;              % seconds
 n_start = floor(t_start*fs) + 1;
 n_end   = floor(t_end*fs);
 
@@ -118,10 +146,10 @@ EV_tf  = zeros(F, nFrames, V);
 Deval_tf_on = zeros(F, nFrames, Neval);
 
 % FxLMS stability settings (full-band needs smaller mu)
-mu = 5e-4;              % start here for full-band
+mu = 3e-4;              % start here for full-band
 pwr_floor = 1e-3;       % prevents huge steps
 
-adapt_bins = 20:600;   % cover all the frequency range for the anc cancellation
+adapt_bins = 1:F;   % cover all the frequency range for the anc cancellation
 %f_axis = (0:F-1)' * fs/nfft;
 %adapt_bins = find(f_axis >= 50 & f_axis <= 600);
 
@@ -136,7 +164,7 @@ end
 
 
 % Skip first/last frames (optional safety)
-skipFrames = 60; % try 5..20
+skipFrames = 50; % try 5..20
 tfrm_start = 1 + skipFrames;
 tfrm_end   = nFrames - skipFrames;
 
@@ -179,15 +207,11 @@ for tfrm = tfrm_start:tfrm_end
     end
     Deval_tf_on(:,tfrm,:) = Deval_frame;
 
-    % --- STFT-domain FxLMS update (paper-style) ---
+    % --- STFT-domain FxLMS update ---
     for fbin = adapt_bins
 
-        % reference vector x(f,t) = [X1; X2; ... XK]
+        % reference vector
         Xvec = squeeze(Xmat(fbin,tfrm,:));        % [K x 1]
-
-        % compute normalization power
-        pwr = sum(abs(Xvec).^2);
-        pwr = max(pwr, pwr_floor);
 
         % get error vector at virtual mics
         eVf = squeeze(EV_tf(fbin,tfrm,:));        % [V x 1]
@@ -205,7 +229,7 @@ for tfrm = tfrm_start:tfrm_end
         % Update weights
         for l = 1:Lspk
             for k = 1:K
-                Wf(fbin,l,k) = Wf(fbin,l,k) - (mu/pwr) * conj(Xvec(k)) * g(l);
+                Wf(fbin,l,k) = Wf(fbin,l,k) - (mu) * conj(Xvec(k)) * g(l);
             end
         end
     end
@@ -253,7 +277,7 @@ end
 
 %% plot
 
-t = ((n_start-1) + (0:Ns-1))' / fs;   % now t runs from 10 to 50 seconds
+t = ((n_start-1) + (0:Ns-1))' / fs;   % t runs from 10 to 50 seconds
 pPlot = 1;
 
 figure;
@@ -262,7 +286,7 @@ plot(t, eval_on(:,pPlot));
 grid on; xlabel('Time (s)'); ylabel('Amplitude');
 legend('ANC OFF (eval mic)','ANC ON (eval mic)');
 title(sprintf('Evaluation mic %d: time domain', pPlot));
-xlim([25 35]);
+xlim([35 65]);
 
 % PSD plot and noise reduction
 nwel=4096; nover=round(0.75*nwel); nfftW=4096;
@@ -282,7 +306,7 @@ Pa_dB = 10*log10(max(Pa,1e-20));
 NR = Pb_dB - Pa_dB;
 
 % mask bins with no energy
-thr = max(Pb_dB) - 100; % 40
+thr = max(Pb_dB) - 40; % 40
 mask = Pb_dB > thr;
 NR(~mask) = NaN;
 NR = min(max(NR,-30),60); % 20
@@ -293,11 +317,11 @@ grid on; xlim([0 fs/2]);
 xlabel('Hz'); ylabel('PSD (dB/Hz)');
 legend('ANC OFF','ANC ON');
 title(sprintf('Evaluation mic %d: PSD', pPlot));
-xlim([20 600]);
+xlim([0 1400]);
 
 figure;
 plot(fpsd, NR, 'LineWidth', 1.2);
 grid on; xlim([0 fs/2]);
 xlabel('Hz'); ylabel('Noise reduction (dB)');
 title(sprintf('Evaluation mic %d: Noise reduction vs frequency', pPlot));
-xlim([20 600]);
+xlim([0 1400]);
