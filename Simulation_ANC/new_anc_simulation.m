@@ -144,6 +144,14 @@ if size(x2,2) > 1
     x2 = mean(x2,2);
 end
 
+% Resample to simulation sample rate (critical for correct frequency axis)
+if fs1 ~= fs
+    x1 = resample(x1, fs, fs1);
+end
+if fs2 ~= fs
+    x2 = resample(x2, fs, fs2);
+end
+
 % Make exactly 60 seconds
 x1 = make_exact_length(x1, Ns_target);
 x2 = make_exact_length(x2, Ns_target);

@@ -50,10 +50,12 @@ wlen = options.wlen;
 nfft = options.nfft;
 hop = options.hop;
 
-if isempty(wlen) && ~isempty(fs)
-    wlen = fs / 1;  % Default 1 second window.
-else
-    wlen = 4096;
+if isempty(wlen)
+    if ~isempty(fs)
+        wlen = fs / 1;  % Default 1 second window.
+    else
+        wlen = 4096;
+    end
 end
 
 if isempty(nfft)

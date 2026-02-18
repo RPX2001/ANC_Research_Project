@@ -133,11 +133,13 @@ EV_tf  = zeros(F, nFrames, V);             % Virtual error (ANC ON)
 Deval_tf_on = zeros(F, nFrames, Neval);    % Evaluation mics (ANC ON)
 
 % FxLMS algorithm parameters
-mu = 5e-4;                        % Step size (learning rate) - increased from 3e-4 for faster convergence
-pwr_floor = 1e-3;                 % Power floor to prevent division by zero
+mu = 8e-4;                        % Normalized FxLMS step size
+pwr_floor = 1e-6;                 % Power floor to prevent division by zero
+leak = 1e-5;                      % Small leakage for robustness
 
 % Frequency adaptation range
-adapt_bins = 1:F;                 % Adapt across all frequency bins (0 to 4000 Hz)
+f_axis = (0:F-1)' * fs/nfft;
+adapt_bins = find(f_axis >= 20 & f_axis <= 1500);  % Match paper-like control band
 % Optional: limit to specific frequency range if needed
 % f_axis = (0:F-1)' * fs/nfft;
 % adapt_bins = find(f_axis >= 50 & f_axis <= 1500);  % Focus on specific band
@@ -156,6 +158,7 @@ Xmat = zeros(F, nFrames, K);
 for k = 1:K
     Xmat(:,:,k) = X{k};
 end
+K = size(Xmat,3);  % lock to actual reference-channel dimension
 
 % Skip initial and final frames to avoid transient artifacts
 skipFrames = 60;
@@ -166,7 +169,7 @@ fprintf('  Processing frames %d to %d (skipping %d at start/end)\n', ...
     tfrm_start, tfrm_end, skipFrames);
 
 % Progress reporting
-report_interval = floor((tfrm_end - tfrm_start) / 20); % Report every 5%
+report_interval = max(1, floor((tfrm_end - tfrm_start) / 20)); % Report every 5%
 tic;
 
 for tfrm = tfrm_start:tfrm_end
@@ -218,25 +221,52 @@ for tfrm = tfrm_start:tfrm_end
     for fbin = adapt_bins
 
         % reference vector
-        Xvec = squeeze(Xmat(fbin,tfrm,:));        % [K x 1]
+        Xvec = squeeze(Xmat(fbin,tfrm,:));                  % [K x 1] (runtime-safe)
+        Xvec = Xvec(:);
 
         % get error vector at virtual mics
-        eVf = squeeze(EV_tf(fbin,tfrm,:));        % [V x 1]
+        eVf = squeeze(EV_tf(fbin,tfrm,:));                  % [V x 1] (runtime-safe)
+        eVf = eVf(:);
 
         % Secondary path to monitoring mics (M x L)
-        SMf = squeeze(Hsm(fbin,:,:));             % [M x L]
+        SMf = squeeze(Hsm(fbin,:,:));                       % [M x L]
+        SMf = reshape(SMf, size(SMf,1), []);                % force 2-D
+        if size(SMf,2) ~= Lspk && size(SMf,1) == Lspk
+            SMf = SMf.';                                    % ensure [M x L]
+        end
 
         % ReTM mapping (V x M)
-        Rf = squeeze(RVM(fbin,:,:));              % [V x M]
+        Rf = squeeze(RVM(fbin,:,:));                        % [V x M]
+        Rf = reshape(Rf, size(Rf,1), []);                   % force 2-D
+        if size(Rf,1) ~= numel(eVf) && size(Rf,2) == numel(eVf)
+            Rf = Rf.';                                      % ensure [V x M]
+        end
 
         % gradient term per speaker:
         % g = S_M^H * R^H * eV
-        g = (SMf') * (Rf') * eVf;                 % [L x 1]
+        eVf = reshape(eVf, [], 1);                          % force column vector
+        RH  = permute(conj(Rf),  [2 1]);                    % R^H, size [M x V]
+        SMH = permute(conj(SMf), [2 1]);                    % S_M^H, size [L x M]
+
+        % Runtime-safe multiply with aligned V-dimension
+        V_use = min(size(RH,2), numel(eVf));
+        tmp = RH(:,1:V_use) * eVf(1:V_use);                % [M x 1]
+
+        % Runtime-safe multiply in case M dimensions differ by orientation drift
+        M_use = min(size(SMH,2), numel(tmp));
+        g = SMH(:,1:M_use) * tmp(1:M_use);                 % [L x 1]
+
+        % Runtime-safe channel count (protects against dimension drift)
+        K_use = min(size(Wf,3), numel(Xvec));
+
+        % Per-bin normalized step (NLMS style)
+        xpow = sum(abs(Xvec(1:K_use)).^2);
+        eta = mu / (xpow + pwr_floor);
 
         % Update weights
         for l = 1:Lspk
-            for k = 1:K
-                Wf(fbin,l,k) = Wf(fbin,l,k) - (mu) * conj(Xvec(k)) * g(l);
+            for k = 1:K_use
+                Wf(fbin,l,k) = (1 - leak) * Wf(fbin,l,k) - eta * conj(Xvec(k)) * g(l);
             end
         end
     end
@@ -331,10 +361,6 @@ xa = eval_on(trim:end-trim, pPlot);   % ANC ON
 % Optional: use virtual error instead of evaluation mics
 % xb = ev_before(trim:end-trim, pPlot);
 % xa = ev_after(trim:end-trim, pPlot);
-
-% Compute PSD using Welch method
-[Pb, fpsd] = pwelch(xb, hann(nwel,'periodic'), nover, nfftW, fs);
-[Pa, ~]    = pwelch(xa, hann(nwel,'periodic'), nover, nfftW, fs);
 
 
 % Compute PSD using Welch method
