@@ -139,6 +139,7 @@ end
 if size(x1,2) > 1
     x1 = mean(x1,2);
 end
+
 if size(x2,2) > 1
     x2 = mean(x2,2);
 end
@@ -148,8 +149,8 @@ x1 = make_exact_length(x1, Ns_target);
 x2 = make_exact_length(x2, Ns_target);
 
 % Remove DC (important for ANC stability)
-x1 = x1 - mean(x1);
-x2 = x2 - mean(x2);
+%x1 = x1 - mean(x1);
+%x2 = x2 - mean(x2);
 
 % Normalize power (do NOT normalize peak)
 %x1 = x1 / rms(x1);
@@ -164,7 +165,8 @@ fprintf('Primary sources ready: %d samples @ %d Hz\n', size(src,1), fs);
 sec_noise = randn(Ns, num_sec_src);
 
 % Band-limit to control band
-band = [20 600];
+% EXPANDED: Increased from [20 600] to [20 2000] for better high-freq ReTM estimation
+band = [20 2000];  % Covers most of the audible ANC bandwidth
 for l = 1:num_sec_src
     sec_noise(:,l) = bandpass(sec_noise(:,l), band, fs);
 end
@@ -216,7 +218,7 @@ end
 % Primary -> Error: H_pe [F x E x K]
 H_pe = zeros(F, num_err_mics, num_pri_src);
 for k = 1:num_pri_src
-    Ht = squeeze(h_pe(:,:,l)).';    % [E × n]
+    Ht = squeeze(h_pe(:,:,k)).';    % [E × n]  % FIXED: was 'l', should be 'k'
     for e = 1:num_err_mics
         H = fft(Ht(e,:), nfft);
         H_pe(:,e,k) = H(1:F).';
@@ -226,7 +228,7 @@ end
 % Secondary -> Monitoring: H_sm [F x M x L]
 H_sm = zeros(F, num_mon_mics, num_sec_src);
 for l = 1:num_sec_src
-    Ht = squeeze(h_sm(:,:,k)).';    % [M × n]
+    Ht = squeeze(h_sm(:,:,l)).';    % [M × n]  % FIXED: was 'k', should be 'l'
     for m = 1:num_mon_mics
         H = fft(Ht(m,:), nfft);
         H_sm(:,m,l) = H(1:F).';
@@ -236,7 +238,7 @@ end
 % Secondary -> Error: H_se [F x E x L]
 H_se = zeros(F, num_err_mics, num_sec_src);
 for l = 1:num_sec_src
-    Ht = squeeze(h_se(:,:,k)).';    % [M × n]
+    Ht = squeeze(h_se(:,:,l)).';    % [E × n]  % FIXED: was 'k', should be 'l'
     for e = 1:num_err_mics
         H = fft(Ht(e,:), nfft);
         H_se(:,e,l) = H(1:F).';
@@ -399,10 +401,24 @@ xlabel('Time (s)'); ylabel('Source Signal');
 title(sprintf('Source signal, Mic %d', ch));
 
 
-t = 1:Ns;
 figure;
 plot(t, sec_noise(:,1));
 grid on;
 xlabel('Time (s)'); ylabel('Secondary Source Signal');
 title(sprintf('Secondary Source signal, Mic %d', 1));
 %xlim([10 50]);
+
+%% Run ANC Control Stage
+% All required variables are now in the workspace:
+% - h_pm, h_sm, h_pee, h_see (impulse responses)
+% - retm_est (ReTM estimate)  
+% - fs, wlen, hop, nfft, win (STFT parameters)
+% - src (source signals - will be loaded again in anc_system.m)
+
+fprintf('\n========================================\n');
+fprintf('   Tuning Stage Complete\n');
+fprintf('   Starting ANC Control Stage\n');
+fprintf('========================================\n\n');
+
+% Run the ANC control algorithm
+run('anc_system.m');
