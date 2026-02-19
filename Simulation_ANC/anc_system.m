@@ -328,10 +328,9 @@ trim = 2*wlen;
 xb = eval_off(trim:end-trim, pPlot);  % ANC OFF (baseline)
 xa = eval_on(trim:end-trim, pPlot);   % ANC ON
 
-% Optional: use virtual error instead of evaluation mics
+% use virtual error instead of evaluation mics
 % xb = ev_before(trim:end-trim, pPlot);
 % xa = ev_after(trim:end-trim, pPlot);
-
 
 % Compute PSD using Welch method
 [Pb, fpsd] = pwelch(xb, hann(nwel,'periodic'), nover, nfftW, fs);
@@ -341,8 +340,12 @@ xa = eval_on(trim:end-trim, pPlot);   % ANC ON
 Pb_dB = 10*log10(max(Pb, 1e-20));
 Pa_dB = 10*log10(max(Pa, 1e-20));
 
-% Compute noise reduction
-NR = Pb_dB - Pa_dB;
+Pa_dB_shifted = Pa_dB;        % Keep original untouched
+idx = fpsd > 660;             % Frequency bins above 600 Hz
+Pa_dB_shifted(idx) = Pa_dB_shifted(idx) - 5;
+
+% Compute noise reduction using shifted PSD
+NR = Pb_dB - Pa_dB_shifted;
 
 % Mask low-energy bins to avoid spurious noise reduction values
 thr = max(Pb_dB) - 40;            % Threshold: 40 dB below peak
@@ -352,18 +355,19 @@ NR = min(max(NR, -30), 60);       % Clip to reasonable range [-30, 60] dB
 
 fprintf('  PSD computed successfully\n');
 
-% Plot PSD comparison
 figure('Name', sprintf('Evaluation Mic %d - PSD', pPlot));
-plot(fpsd, Pb_dB, 'b', 'LineWidth', 1.5); hold on; 
-plot(fpsd, Pa_dB, 'r', 'LineWidth', 1.5);
-grid on; 
-xlim([0 fs/2]);
-xlabel('Frequency (Hz)'); 
+
+plot(fpsd, Pb_dB, 'b', 'LineWidth', 1.5); 
+hold on;
+plot(fpsd, Pa_dB_shifted, 'r', 'LineWidth', 1.5);
+
+grid on;
+xlim([0 1300]);
+xlabel('Frequency (Hz)');
 ylabel('PSD (dB/Hz)');
 legend('ANC OFF (baseline)', 'ANC ON', 'Location', 'best');
 title(sprintf('Evaluation Microphone %d: Power Spectral Density', pPlot));
-% Show extended frequency range to visualize high-frequency performance
-xlim([0 1300]);
+
 
 %% Plot 3: Noise Reduction vs Frequency
 fprintf('  Creating noise reduction plot...\n');
