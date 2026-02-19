@@ -2,7 +2,7 @@
 % This script should be run AFTER new_anc_simulation.m
 % It expects these variables to exist in the workspace:
 % - h_pm, h_sm, h_pee, h_see (impulse responses)
-% - rm_est (RM estimate)
+% - retm_est (ReTM estimate)
 % - fs, wlen, hop, nfft, win (STFT parameters)
 % - src (source signals)
 
@@ -45,11 +45,11 @@ W_nums = 128;                     % Number of FIR filter taps (increased from 64
 fprintf('System dimensions: K=%d sources, M=%d mon mics, L=%d speakers, Neval=%d eval mics\n', ...
     K, M, Lspk, Neval);
 
-% Extract RM in correct format [F x V x M]
-RVM = reshape(rm_est(:,1,:,:), [F, size(rm_est,3), size(rm_est,4)]); % rm_est: [F x 1 x V x M]
+% Extract ReTM in correct format [F x V x M]
+RVM = squeeze(rm_est(:,1,:,:)); % Assuming retm_est is [F x nFrames x V x M]
 V = size(RVM,2);                  % Number of virtual error mics
 
-fprintf('RM extracted: %d virtual error channels mapped from %d monitoring mics\n', V, M);
+fprintf('ReTM extracted: %d virtual mics mapped from %d monitoring mics\n', V, M);
 
 
 %% Build STFT of source signals and frequency responses of acoustic paths
@@ -133,13 +133,11 @@ EV_tf  = zeros(F, nFrames, V);             % Virtual error (ANC ON)
 Deval_tf_on = zeros(F, nFrames, Neval);    % Evaluation mics (ANC ON)
 
 % FxLMS algorithm parameters
-mu = 8e-4;                        % Normalized FxLMS step size
-pwr_floor = 1e-6;                 % Power floor to prevent division by zero
-leak = 1e-5;                      % Small leakage for robustness
+mu = 5e-4;                        % Step size (learning rate) - increased from 3e-4 for faster convergence
+pwr_floor = 1e-3;                 % Power floor to prevent division by zero
 
 % Frequency adaptation range
-f_axis = (0:F-1)' * fs/nfft;
-adapt_bins = find(f_axis >= 20 & f_axis <= 1500);  % Match paper-like control band
+adapt_bins = 1:F;                 % Adapt across all frequency bins (0 to 4000 Hz)
 % Optional: limit to specific frequency range if needed
 % f_axis = (0:F-1)' * fs/nfft;
 % adapt_bins = find(f_axis >= 50 & f_axis <= 1500);  % Focus on specific band
@@ -158,7 +156,6 @@ Xmat = zeros(F, nFrames, K);
 for k = 1:K
     Xmat(:,:,k) = X{k};
 end
-K = size(Xmat,3);  % lock to actual reference-channel dimension
 
 % Skip initial and final frames to avoid transient artifacts
 skipFrames = 60;
@@ -169,7 +166,7 @@ fprintf('  Processing frames %d to %d (skipping %d at start/end)\n', ...
     tfrm_start, tfrm_end, skipFrames);
 
 % Progress reporting
-report_interval = max(1, floor((tfrm_end - tfrm_start) / 20)); % Report every 5%
+report_interval = floor((tfrm_end - tfrm_start) / 20); % Report every 5%
 tic;
 
 for tfrm = tfrm_start:tfrm_end
@@ -220,35 +217,26 @@ for tfrm = tfrm_start:tfrm_end
     % --- STFT-domain FxLMS update ---
     for fbin = adapt_bins
 
-        % Runtime-safe vectors/matrices (singleton dimensions may vary)
-        Xvec = reshape(Xmat(fbin,tfrm,:), [], 1);          % [K x 1]
-        eVf  = reshape(EV_tf(fbin,tfrm,:), [], 1);         % [V x 1]
-        SMf  = reshape(Hsm(fbin,:,:), [], Lspk);           % [M x L]
-        Rf   = reshape(RVM(fbin,:,:), [], M);              % [V x M]
+        % reference vector
+        Xvec = squeeze(Xmat(fbin,tfrm,:));        % [K x 1]
 
-        % RM-based virtual-sensing FxLMS gradient:
-        % g = S_M^H * R_M^H * e_v
-        RH = conj(Rf).';                                    % [M x V]
-        V_use = min(size(RH,2), numel(eVf));
-        tmp = RH(:,1:V_use) * eVf(1:V_use);                % [M x 1]
+        % get error vector at virtual mics
+        eVf = squeeze(EV_tf(fbin,tfrm,:));        % [V x 1]
 
-        M_use = min(size(SMf,1), numel(tmp));
-        g_core = (conj(SMf(1:M_use,:)).') * tmp(1:M_use);  % [L x 1]
+        % Secondary path to monitoring mics (M x L)
+        SMf = squeeze(Hsm(fbin,:,:));             % [M x L]
 
-        g = zeros(Lspk,1);
-        g(1:min(Lspk,numel(g_core))) = g_core(1:min(Lspk,numel(g_core)));
+        % ReTM mapping (V x M)
+        Rf = squeeze(RVM(fbin,:,:));              % [V x M]
 
-        % Runtime-safe channel count (protects against dimension drift)
-        K_use = min(K, numel(Xvec));
-
-        % Per-bin normalized step (NLMS style)
-        xpow = sum(abs(Xvec(1:K_use)).^2);
-        eta = mu / (xpow + pwr_floor);
+        % gradient term per speaker:
+        % g = S_M^H * R^H * eV
+        g = (SMf') * (Rf') * eVf;                 % [L x 1]
 
         % Update weights
         for l = 1:Lspk
-            for k = 1:K_use
-                Wf(fbin,l,k) = (1 - leak) * Wf(fbin,l,k) - eta * conj(Xvec(k)) * g(l);
+            for k = 1:K
+                Wf(fbin,l,k) = Wf(fbin,l,k) - (mu) * conj(Xvec(k)) * g(l);
             end
         end
     end
@@ -324,7 +312,7 @@ xlabel('Time (s)');
 ylabel('Amplitude');
 legend('ANC OFF (baseline)', 'ANC ON', 'Location', 'best');
 title(sprintf('Evaluation Microphone %d: Time Domain Comparison', pPlot));
-xlim([t(1) t(end)]);  % Show full control window
+xlim([25 70]);  % Show full control window
 % Or zoom to specific region: xlim([35 65]);
 
 %% Plot 2: Power Spectral Density (PSD)
@@ -375,7 +363,7 @@ ylabel('PSD (dB/Hz)');
 legend('ANC OFF (baseline)', 'ANC ON', 'Location', 'best');
 title(sprintf('Evaluation Microphone %d: Power Spectral Density', pPlot));
 % Show extended frequency range to visualize high-frequency performance
-xlim([0 2000]);
+xlim([0 1300]);
 
 %% Plot 3: Noise Reduction vs Frequency
 fprintf('  Creating noise reduction plot...\n');
@@ -387,7 +375,7 @@ xlim([0 fs/2]);
 xlabel('Frequency (Hz)'); 
 ylabel('Noise Reduction (dB)');
 title(sprintf('Evaluation Microphone %d: ANC Performance', pPlot));
-xlim([0 2000]);
+xlim([0 1300]);
 
 % Compute average noise reduction in frequency band of interest
 fband_low = fpsd >= 50 & fpsd <= 600;     % Traditional ANC band

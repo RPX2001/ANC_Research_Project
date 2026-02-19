@@ -144,14 +144,6 @@ if size(x2,2) > 1
     x2 = mean(x2,2);
 end
 
-% Resample to simulation sample rate (critical for correct frequency axis)
-if fs1 ~= fs
-    x1 = resample(x1, fs, fs1);
-end
-if fs2 ~= fs
-    x2 = resample(x2, fs, fs2);
-end
-
 % Make exactly 60 seconds
 x1 = make_exact_length(x1, Ns_target);
 x2 = make_exact_length(x2, Ns_target);
@@ -310,7 +302,7 @@ err_sig = err_sig(1:Ns,:);
 disp(size(mon_sig));   
 disp(size(err_sig));   
 
-%% Add these two signal to RM estimator 
+%% Add these two signal to ReTM estimator 
 
 [rm_est, rmi_est] = rm_estimate( ...
     err_sig, ...
@@ -419,7 +411,7 @@ title(sprintf('Secondary Source signal, Mic %d', 1));
 %% Run ANC Control Stage
 % All required variables are now in the workspace:
 % - h_pm, h_sm, h_pee, h_see (impulse responses)
-% - rm_est (RM estimate)  
+% - retm_est (ReTM estimate)  
 % - fs, wlen, hop, nfft, win (STFT parameters)
 % - src (source signals - will be loaded again in anc_system.m)
 
