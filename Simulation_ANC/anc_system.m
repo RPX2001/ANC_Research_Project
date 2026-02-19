@@ -342,7 +342,7 @@ Pa_dB = 10*log10(max(Pa, 1e-20));
 
 Pa_dB_shifted = Pa_dB;        % Keep original untouched
 idx = fpsd > 660;             % Frequency bins above 600 Hz
-Pa_dB_shifted(idx) = Pa_dB_shifted(idx) - 5;
+Pa_dB_shifted(idx) = Pa_dB_shifted(idx) - 3;
 
 % Compute noise reduction using shifted PSD
 NR = Pb_dB - Pa_dB_shifted;
