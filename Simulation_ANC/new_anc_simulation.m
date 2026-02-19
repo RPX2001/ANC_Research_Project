@@ -310,9 +310,9 @@ err_sig = err_sig(1:Ns,:);
 disp(size(mon_sig));   
 disp(size(err_sig));   
 
-%% Add these two signal to ReTM estimator 
+%% Add these two signal to RM estimator 
 
-[retm_est, reim_est] = retm_estimate( ...
+[rm_est, rmi_est] = rm_estimate( ...
     err_sig, ...
     mon_sig, ...
     'fs', fs, ...
@@ -325,7 +325,7 @@ disp(size(err_sig));
 fbin = 100;          % frequency index
 tfrm = 1;            % time/frame index (or 1 if it’s constant)
 
-Re = squeeze(reim_est(fbin, tfrm, :, :));   % -> [nErr x nMon]
+Re = squeeze(rmi_est(fbin, tfrm, :, :));   % -> [nErr x nMon]
 
 
 %% Recreate the error signal based on monitoring signal for varification
@@ -350,7 +350,7 @@ Ehat_tf = zeros(F, nFrames, num_err_mics);
 
 for e = 1:num_err_mics
     for m = 1:num_mon_mics
-        H_em = squeeze(retm_est(:,1,e,m));   % [F x 1] (expected)
+        H_em = squeeze(rm_est(:,1,e,m));   % [F x 1] (expected)
         H_em = H_em(:);
         Ehat_tf(:,:,e) = Ehat_tf(:,:,e) + H_em .* R{m};
     end
@@ -419,7 +419,7 @@ title(sprintf('Secondary Source signal, Mic %d', 1));
 %% Run ANC Control Stage
 % All required variables are now in the workspace:
 % - h_pm, h_sm, h_pee, h_see (impulse responses)
-% - retm_est (ReTM estimate)  
+% - rm_est (RM estimate)  
 % - fs, wlen, hop, nfft, win (STFT parameters)
 % - src (source signals - will be loaded again in anc_system.m)
 

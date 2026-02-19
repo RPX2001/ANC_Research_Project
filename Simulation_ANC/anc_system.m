@@ -2,12 +2,12 @@
 % This script should be run AFTER new_anc_simulation.m
 % It expects these variables to exist in the workspace:
 % - h_pm, h_sm, h_pee, h_see (impulse responses)
-% - retm_est (ReTM estimate)
+% - rm_est (RM estimate)
 % - fs, wlen, hop, nfft, win (STFT parameters)
 % - src (source signals)
 
 %% Verify required variables exist
-required_vars = {'h_pm', 'h_sm', 'h_pee', 'h_see', 'retm_est', 'fs', 'wlen', 'hop', 'nfft', 'win'};
+required_vars = {'h_pm', 'h_sm', 'h_pee', 'h_see', 'rm_est', 'fs', 'wlen', 'hop', 'nfft', 'win'};
 missing_vars = {};
 for i = 1:length(required_vars)
     if ~exist(required_vars{i}, 'var')
@@ -45,11 +45,11 @@ W_nums = 128;                     % Number of FIR filter taps (increased from 64
 fprintf('System dimensions: K=%d sources, M=%d mon mics, L=%d speakers, Neval=%d eval mics\n', ...
     K, M, Lspk, Neval);
 
-% Extract ReTM in correct format [F x V x M]
-RVM = squeeze(retm_est(:,1,:,:)); % Assuming retm_est is [F x nFrames x V x M]
+% Extract RM in correct format [F x V x M]
+RVM = reshape(rm_est(:,1,:,:), [F, size(rm_est,3), size(rm_est,4)]); % rm_est: [F x 1 x V x M]
 V = size(RVM,2);                  % Number of virtual error mics
 
-fprintf('ReTM extracted: %d virtual mics mapped from %d monitoring mics\n', V, M);
+fprintf('RM extracted: %d virtual error channels mapped from %d monitoring mics\n', V, M);
 
 
 %% Build STFT of source signals and frequency responses of acoustic paths
@@ -220,44 +220,26 @@ for tfrm = tfrm_start:tfrm_end
     % --- STFT-domain FxLMS update ---
     for fbin = adapt_bins
 
-        % reference vector
-        Xvec = squeeze(Xmat(fbin,tfrm,:));                  % [K x 1] (runtime-safe)
-        Xvec = Xvec(:);
+        % Runtime-safe vectors/matrices (singleton dimensions may vary)
+        Xvec = reshape(Xmat(fbin,tfrm,:), [], 1);          % [K x 1]
+        eVf  = reshape(EV_tf(fbin,tfrm,:), [], 1);         % [V x 1]
+        SMf  = reshape(Hsm(fbin,:,:), [], Lspk);           % [M x L]
+        Rf   = reshape(RVM(fbin,:,:), [], M);              % [V x M]
 
-        % get error vector at virtual mics
-        eVf = squeeze(EV_tf(fbin,tfrm,:));                  % [V x 1] (runtime-safe)
-        eVf = eVf(:);
-
-        % Secondary path to monitoring mics (M x L)
-        SMf = squeeze(Hsm(fbin,:,:));                       % [M x L]
-        SMf = reshape(SMf, size(SMf,1), []);                % force 2-D
-        if size(SMf,2) ~= Lspk && size(SMf,1) == Lspk
-            SMf = SMf.';                                    % ensure [M x L]
-        end
-
-        % ReTM mapping (V x M)
-        Rf = squeeze(RVM(fbin,:,:));                        % [V x M]
-        Rf = reshape(Rf, size(Rf,1), []);                   % force 2-D
-        if size(Rf,1) ~= numel(eVf) && size(Rf,2) == numel(eVf)
-            Rf = Rf.';                                      % ensure [V x M]
-        end
-
-        % gradient term per speaker:
-        % g = S_M^H * R^H * eV
-        eVf = reshape(eVf, [], 1);                          % force column vector
-        RH  = permute(conj(Rf),  [2 1]);                    % R^H, size [M x V]
-        SMH = permute(conj(SMf), [2 1]);                    % S_M^H, size [L x M]
-
-        % Runtime-safe multiply with aligned V-dimension
+        % RM-based virtual-sensing FxLMS gradient:
+        % g = S_M^H * R_M^H * e_v
+        RH = conj(Rf).';                                    % [M x V]
         V_use = min(size(RH,2), numel(eVf));
         tmp = RH(:,1:V_use) * eVf(1:V_use);                % [M x 1]
 
-        % Runtime-safe multiply in case M dimensions differ by orientation drift
-        M_use = min(size(SMH,2), numel(tmp));
-        g = SMH(:,1:M_use) * tmp(1:M_use);                 % [L x 1]
+        M_use = min(size(SMf,1), numel(tmp));
+        g_core = (conj(SMf(1:M_use,:)).') * tmp(1:M_use);  % [L x 1]
+
+        g = zeros(Lspk,1);
+        g(1:min(Lspk,numel(g_core))) = g_core(1:min(Lspk,numel(g_core)));
 
         % Runtime-safe channel count (protects against dimension drift)
-        K_use = min(size(Wf,3), numel(Xvec));
+        K_use = min(K, numel(Xvec));
 
         % Per-bin normalized step (NLMS style)
         xpow = sum(abs(Xvec(1:K_use)).^2);
