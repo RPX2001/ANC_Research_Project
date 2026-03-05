@@ -179,7 +179,7 @@ xlabel('Frequency (Hz)');
 ylabel('PSD (dB/Hz)');
 legend('RM: ANC OFF', 'RM: ANC ON', 'ReTM: ANC OFF', 'ReTM: ANC ON', 'Location', 'best');
 title(sprintf('Evaluation Microphone %d - PSD Comparison', resRM.pPlot));
-xlim([0 2000]);
+xlim([0 1500]);
 
 % Combined Noise Reduction
 figure('Name', sprintf('RM vs ReTM - Evaluation Mic %d Noise Reduction', resRM.pPlot));
@@ -190,7 +190,7 @@ xlabel('Frequency (Hz)');
 ylabel('Noise Reduction (dB)');
 legend('RM', 'ReTM', 'Location', 'best');
 title(sprintf('Evaluation Microphone %d - Noise Reduction Comparison', resRM.pPlot));
-xlim([0 2000]);
+xlim([0 1500]);
 
 % Optional: time-domain comparison at evaluation mic
 figure('Name', sprintf('RM vs ReTM - Evaluation Mic %d Time Domain', resRM.pPlot));
