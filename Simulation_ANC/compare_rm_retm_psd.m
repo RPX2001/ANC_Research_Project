@@ -14,6 +14,10 @@ fprintf('=== RM vs ReTM Comparison (same scenario) ===\n');
 addpath(genpath('RIR_Generator'));
 addpath(genpath('ReTM'));
 
+% Scenario: secondary speakers moved to [0, +-0.35, 0] m before tuning
+sec_sources_override = [0  0.35 0;
+                        0 -0.35 0];
+
 %% 1) Run common tuning stage (unchanged)
 fprintf('\n[1/4] Running common tuning stage using new_anc_simulation.m ...\n');
 run('new_anc_simulation.m');

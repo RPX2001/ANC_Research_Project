@@ -63,8 +63,16 @@ mon_mics = [0.15  0.15 -0.15;           % Microphone 1
 prim_sources = [0.6  0.8  1;
                 2.17 1.15 0.05];  % primary sources
 
-sec_sources = [0  0.3 0;
-               0 -0.3 0];        % Secondary sources
+if exist('sec_sources_override', 'var')
+    sec_sources = sec_sources_override;
+    if size(sec_sources,1) ~= num_sec_src || size(sec_sources,2) ~= 3
+        error('sec_sources_override must be [%d x 3].', num_sec_src);
+    end
+    fprintf('Using overridden secondary speaker positions from workspace.\n');
+else
+    sec_sources = [0  0.3 0;
+                   0 -0.3 0];    % Secondary sources
+end
 
 %% Error microphone positions
 
