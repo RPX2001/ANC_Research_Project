@@ -14,13 +14,73 @@ fprintf('=== RM vs ReTM Comparison (same scenario) ===\n');
 addpath(genpath('RIR_Generator'));
 addpath(genpath('ReTM'));
 
-%% 1) Run existing RM pipeline (unchanged)
-fprintf('\n[1/3] Running RM-based simulation using new_anc_simulation.m ...\n');
+%% 1) Run common tuning stage (unchanged)
+fprintf('\n[1/4] Running common tuning stage using new_anc_simulation.m ...\n');
 run('new_anc_simulation.m');
 
-% Save RM outputs from anc_system.m
+if ~exist('rm_est','var') || ~exist('err_sig','var') || ~exist('mon_sig','var') || ~exist('fs','var') || ~exist('wlen','var') || ~exist('nfft','var') || ~exist('hop','var')
+    error('Required tuning-stage variables are missing after new_anc_simulation.m.');
+end
+
+%% 2) Replace only control-stage primary sources with buccaneer signals
+fprintf('[2/4] Preparing control-stage primary sources: buccaneer1.wav + buccaneer2.wav ...\n');
+
+src1_file = fullfile('Sound_sources', 'buccaneer1.wav');
+src2_file = fullfile('Sound_sources', 'buccaneer2.wav');
+if ~isfile(src1_file)
+    error('Control-stage source file not found: %s', src1_file);
+end
+if ~isfile(src2_file)
+    error('Control-stage source file not found: %s', src2_file);
+end
+
+[x1_ctrl, fs1_ctrl] = audioread(src1_file);
+[x2_ctrl, fs2_ctrl] = audioread(src2_file);
+
+if size(x1_ctrl,2) > 1
+    x1_ctrl = mean(x1_ctrl, 2);
+end
+if size(x2_ctrl,2) > 1
+    x2_ctrl = mean(x2_ctrl, 2);
+end
+
+if fs1_ctrl ~= fs
+    x1_ctrl = resample(x1_ctrl, fs, fs1_ctrl);
+end
+if fs2_ctrl ~= fs
+    x2_ctrl = resample(x2_ctrl, fs, fs2_ctrl);
+end
+
+if exist('Ns_target','var')
+    N_control = Ns_target;
+else
+    N_control = size(src,1);
+end
+
+if length(x1_ctrl) >= N_control
+    x1_ctrl = x1_ctrl(1:N_control);
+else
+    x1_ctrl = repmat(x1_ctrl, ceil(N_control/length(x1_ctrl)), 1);
+    x1_ctrl = x1_ctrl(1:N_control);
+end
+
+if length(x2_ctrl) >= N_control
+    x2_ctrl = x2_ctrl(1:N_control);
+else
+    x2_ctrl = repmat(x2_ctrl, ceil(N_control/length(x2_ctrl)), 1);
+    x2_ctrl = x2_ctrl(1:N_control);
+end
+
+src_control = [x1_ctrl, x2_ctrl];
+
+%% 3) RM control-stage ANC run with new source
+fprintf('[3/4] Running ANC control (RM) with buccaneer control-stage sources ...\n');
+
+src = src_control;
+run('anc_system.m');
+
 if ~exist('fpsd','var') || ~exist('Pb_dB','var') || ~exist('NR','var') || ~exist('eval_off','var') || ~exist('eval_on','var')
-    error('Expected ANC outputs not found after RM run. Check new_anc_simulation.m and anc_system.m execution.');
+    error('Expected ANC outputs not found after RM control-stage run.');
 end
 
 resRM = struct();
@@ -39,8 +99,8 @@ resRM.eval_on = eval_on;
 resRM.t = t;
 resRM.pPlot = pPlot;
 
-%% 2) ReTM estimate, then rerun same ANC control script
-fprintf('[2/3] Switching estimator to ReTM and rerunning anc_system.m ...\n');
+%% 4) ReTM estimate, then rerun same ANC control script with same source
+fprintf('[4/4] Switching estimator to ReTM and rerunning anc_system.m ...\n');
 
 if ~exist('err_sig','var') || ~exist('mon_sig','var') || ~exist('fs','var') || ~exist('wlen','var') || ~exist('nfft','var') || ~exist('hop','var')
     error('Required tuning variables for ReTM estimation are missing.');
@@ -57,10 +117,8 @@ end
 % anc_system.m currently reads variable rm_est for virtual mapping.
 rm_est = retm_est;
 
-% Restore full-length source before rerunning anc_system.m
-if exist('src_full','var')
-    src = src_full;
-end
+% Keep same control-stage source for fair RM vs ReTM comparison
+src = src_control;
 
 run('anc_system.m');
 

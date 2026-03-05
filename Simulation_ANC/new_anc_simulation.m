@@ -421,4 +421,4 @@ fprintf('   Starting ANC Control Stage\n');
 fprintf('========================================\n\n');
 
 % Run the ANC control algorithm
-run('anc_system.m');
+%run('anc_system.m');
