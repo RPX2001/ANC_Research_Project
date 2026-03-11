@@ -179,13 +179,6 @@ for l = 1:num_sec_src
     sec_noise(:,l) = bandpass(sec_noise(:,l), band, fs);
 end
 
-% Normalize (important)
-%sec_noise = sec_noise ./ (rms(sec_noise,1) + 1e-8);
-
-% Scale: secondary noise should be weaker than primary
-%sec_gain = 0.3;                   
-%sec_noise = sec_gain * sec_noise;
-
 %% Generate Monitoring microphone signals - Tuning Stage
 
 % e_m = h_pm * x_t_f + h_sm * y_t_f
