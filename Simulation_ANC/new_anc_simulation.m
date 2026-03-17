@@ -1,4 +1,6 @@
-clear all;
+if ~exist('preserve_workspace', 'var') || ~preserve_workspace
+    clear all;
+end
 close all;
 %% Helper functions
 
