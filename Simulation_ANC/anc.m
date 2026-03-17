@@ -2,20 +2,12 @@ clearvars;
 close all;
 clc;
 
-fprintf('=== Scenario 3: RM vs ReTM with secondary-path change ===\n');
-
-function y = make_exact_length(x, N)
-    if length(x) > N
-        y = x(1:N);
-    else
-        % loop if shorter (better than zero-padding for noise)
-        y = repmat(x, ceil(N/length(x)), 1);
-        y = y(1:N);
-    end
-end
+fprintf('=== Fig. 6(b) reproduction: Scenario 3 (secondary-path change) ===\n');
 
 addpath(genpath('RIR_Generator'));
 addpath(genpath('ReTM'));
+
+rng(0);
 
 %% ============================================================
 % Parameters
@@ -23,7 +15,7 @@ addpath(genpath('ReTM'));
 c = 340;
 fs = 8000;
 Lroom = [8 7 4];
-beta = 0.4;
+beta = 0.4;              % approx 500 ms T60 setting
 n = 4096;
 mtype = 'omnidirectional';
 order = -1;
@@ -31,16 +23,17 @@ dim = 3;
 orientation = 0;
 hp_filter = 1;
 
-num_pri_src = 2;
-num_sec_src = 2;
-num_mon_mics = 8;
-num_err_mics = 4;
-num_eval_err_mics = 2;
+J = 2;                   % primary sources
+K = 2;                   % secondary loudspeakers
+M = 8;                   % monitoring microphones
+V = 6;                   % virtual microphones
+P_eval = 2;              % last pair for evaluation
 
-Ttune = 100;
-Ns = fs*Ttune;
-T = 100;
-Ns_target = fs*T;
+% Paper uses 60 s tuning and then 60 s unseen noise for scenario 2
+% and another 60 s unseen noise for scenario 3.
+Tseg = 60;
+Ns_seg = fs * Tseg;
+N_total = 3 * Ns_seg;
 
 wlen = 1024;
 hop  = 256;
@@ -49,38 +42,41 @@ win  = hann(wlen,'periodic');
 F    = nfft/2 + 1;
 
 %% ============================================================
-% Geometry
+% Geometry (paper-faithful)
 %% ============================================================
-mon_mics = [0.15  0.15 -0.15;
-            0.15 -0.15 -0.15;
-           -0.15  0.15 -0.15;
-           -0.15 -0.15 -0.15;
-            0     0.212 0.15;
-            0    -0.212 0.15;
-            0.212 0     0.15;
-           -0.212 0     0.15];
+mon_mics = [ 0.15   0.15  -0.15;
+             0.15  -0.15  -0.15;
+            -0.15   0.15  -0.15;
+            -0.15  -0.15  -0.15;
+             0      0.212  0.15;
+             0     -0.212  0.15;
+             0.212  0      0.15;
+            -0.212  0      0.15];
 
 prim_sources = [0.6  0.8  1.00;
                 2.17 1.15 0.05];
 
-error_mics = [0.05  0.10 0;
-              0.05 -0.10 0;
-             -0.05  0.10 0;
-             -0.05 -0.10 0];
+virt_mics = [ 0.05  0.10  0;
+              0.05 -0.10  0;
+             -0.05  0.10  0;
+             -0.05 -0.10  0;
+              0     0.10  0;
+              0    -0.10  0];
 
-eval_mic = [0  0.10 0;
-            0 -0.10 0];
+eval_idx = [5 6];
+eval_mics = virt_mics(eval_idx,:);
 
-% Scenario 3: secondary-path change
-sec_sources_tune = [0.00  0.35 0.00;
-                    0.00 -0.35 0.00];
+% Baseline tuning position in paper
+sec_sources_tune = [0   0.30 0;
+                    0  -0.30 0];
 
-% Make the control-stage secondary path DIFFER noticeably
-sec_sources_ctrl = [ 0  0.30 0.00;
-                    0 -0.30 0.00];
+% Scenario 3 changed position in paper
+sec_sources_ctrl = [0   0.35 0;
+                    0  -0.35 0];
 
 %% ============================================================
-% Source signals
+% Load source signals
+% Need 180 s total = 60 s tuning + 60 s scenario 2 + 60 s scenario 3
 %% ============================================================
 fprintf('Loading source signals...\n');
 
@@ -93,214 +89,281 @@ if size(x2,2) > 1, x2 = mean(x2,2); end
 if fs1 ~= fs, x1 = resample(x1, fs, fs1); end
 if fs2 ~= fs, x2 = resample(x2, fs, fs2); end
 
-x1 = make_exact_length(x1, Ns_target);
-x2 = make_exact_length(x2, Ns_target);
+x1 = make_exact_length(x1, N_total);
+x2 = make_exact_length(x2, N_total);
 
-src = [x1, x2];
+src_all = [x1, x2];
+
+src_tune = src_all(1:Ns_seg, :);                         % first 60 s
+src_scn2 = src_all(Ns_seg+1:2*Ns_seg, :);                % second 60 s
+src_scn3 = src_all(2*Ns_seg+1:3*Ns_seg, :);              % third 60 s
 
 %% ============================================================
-% Tuning-stage impulse responses
+% Generate RIRs
 %% ============================================================
-fprintf('Generating tuning-stage impulse responses...\n');
+fprintf('Generating impulse responses...\n');
 
-h_pm = zeros(n, num_mon_mics, num_pri_src);
-h_pe = zeros(n, num_err_mics, num_pri_src);
-h_pee = zeros(n, num_eval_err_mics, num_pri_src);
+h_pm = zeros(n, M, J);
+h_pv = zeros(n, V, J);
+h_peval = zeros(n, P_eval, J);
 
-for k = 1:num_pri_src
-    h_pm(:,:,k) = rir_generator(c, fs, mon_mics, prim_sources(k,:), ...
+for j = 1:J
+    h_pm(:,:,j) = rir_generator(c, fs, mon_mics, prim_sources(j,:), ...
         Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
-    h_pe(:,:,k) = rir_generator(c, fs, error_mics, prim_sources(k,:), ...
+    h_pv(:,:,j) = rir_generator(c, fs, virt_mics, prim_sources(j,:), ...
         Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
-    h_pee(:,:,k) = rir_generator(c, fs, eval_mic, prim_sources(k,:), ...
+    h_peval(:,:,j) = rir_generator(c, fs, eval_mics, prim_sources(j,:), ...
         Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
 end
 
-h_sm_tune = zeros(n, num_mon_mics, num_sec_src);
-h_se_tune = zeros(n, num_err_mics, num_sec_src);
-h_see_tune = zeros(n, num_eval_err_mics, num_sec_src);
+% Tuning-stage secondary paths
+h_sm_tune = zeros(n, M, K);
+h_sv_tune = zeros(n, V, K);
+h_seval_tune = zeros(n, P_eval, K);
 
-for l = 1:num_sec_src
-    h_sm_tune(:,:,l) = rir_generator(c, fs, mon_mics, sec_sources_tune(l,:), ...
+for k = 1:K
+    h_sm_tune(:,:,k) = rir_generator(c, fs, mon_mics, sec_sources_tune(k,:), ...
         Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
-    h_se_tune(:,:,l) = rir_generator(c, fs, error_mics, sec_sources_tune(l,:), ...
+    h_sv_tune(:,:,k) = rir_generator(c, fs, virt_mics, sec_sources_tune(k,:), ...
         Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
-    h_see_tune(:,:,l) = rir_generator(c, fs, eval_mic, sec_sources_tune(l,:), ...
+    h_seval_tune(:,:,k) = rir_generator(c, fs, eval_mics, sec_sources_tune(k,:), ...
+        Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
+end
+
+% Scenario 3 changed secondary paths
+h_sm_ctrl = zeros(n, M, K);
+h_sv_ctrl = zeros(n, V, K);
+h_seval_ctrl = zeros(n, P_eval, K);
+
+for k = 1:K
+    h_sm_ctrl(:,:,k) = rir_generator(c, fs, mon_mics, sec_sources_ctrl(k,:), ...
+        Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
+    h_sv_ctrl(:,:,k) = rir_generator(c, fs, virt_mics, sec_sources_ctrl(k,:), ...
+        Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
+    h_seval_ctrl(:,:,k) = rir_generator(c, fs, eval_mics, sec_sources_ctrl(k,:), ...
         Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
 end
 
 %% ============================================================
-% Control-stage CHANGED secondary paths
+% Frequency-domain paths
 %% ============================================================
-fprintf('Generating control-stage changed secondary paths...\n');
+H_pm         = rir_to_H(h_pm, nfft);
+H_pv         = rir_to_H(h_pv, nfft);
+H_peval      = rir_to_H(h_peval, nfft);
 
-h_sm_ctrl = zeros(n, num_mon_mics, num_sec_src);
-h_se_ctrl = zeros(n, num_err_mics, num_sec_src);
-h_see_ctrl = zeros(n, num_eval_err_mics, num_sec_src);
+H_sm_tune    = rir_to_H(h_sm_tune, nfft);
+H_sv_tune    = rir_to_H(h_sv_tune, nfft);
+H_seval_tune = rir_to_H(h_seval_tune, nfft);
 
-for l = 1:num_sec_src
-    h_sm_ctrl(:,:,l) = rir_generator(c, fs, mon_mics, sec_sources_ctrl(l,:), ...
-        Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
-    h_se_ctrl(:,:,l) = rir_generator(c, fs, error_mics, sec_sources_ctrl(l,:), ...
-        Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
-    h_see_ctrl(:,:,l) = rir_generator(c, fs, eval_mic, sec_sources_ctrl(l,:), ...
-        Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
-end
+H_sm_ctrl    = rir_to_H(h_sm_ctrl, nfft);
+H_sv_ctrl    = rir_to_H(h_sv_ctrl, nfft);
+H_seval_ctrl = rir_to_H(h_seval_ctrl, nfft);
 
 %% ============================================================
-% Tuning-stage monitoring/error signals
+% Tuning-stage data
+% IMPORTANT:
+%   ReTM  -> primary + secondary active
+%   RM    -> primary only
 %% ============================================================
-fprintf('Generating tuning-stage monitoring/error signals...\n');
+fprintf('Generating tuning-stage signals for ReTM and RM separately...\n');
 
-sec_noise = randn(Ns, num_sec_src);
-for l = 1:num_sec_src
-    sec_noise(:,l) = bandpass(sec_noise(:,l), [20 600], fs);
+% Primary references STFT
+X_tune = cell(J,1);
+for j = 1:J
+    X_tune{j} = stft(src_tune(:,j), fs, ...
+        'Window', win, ...
+        'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, ...
+        'FrequencyRange', 'onesided');
+end
+nFrames_tune = size(X_tune{1},2);
+
+% Secondary random noise only for ReTM tuning
+U_tune = cell(K,1);
+sec_noise = randn(Ns_seg, K);
+for k = 1:K
+    sec_noise(:,k) = bandpass(sec_noise(:,k), [20 600], fs);
+    U_tune{k} = stft(sec_noise(:,k), fs, ...
+        'Window', win, ...
+        'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, ...
+        'FrequencyRange', 'onesided');
 end
 
-X = cell(num_pri_src,1);
-U = cell(num_sec_src,1);
+% ---------- Primary-only fields for RM ----------
+EM_tf_rm = zeros(F, nFrames_tune, M);
+EV_tf_rm = zeros(F, nFrames_tune, V);
 
-for k = 1:num_pri_src
-    X{k} = stft(src(:,k), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided');
-end
-
-for l = 1:num_sec_src
-    U{l} = stft(sec_noise(:,l), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided');
-end
-
-nFrames = size(X{1},2);
-
-H_pm = rir_to_H(h_pm, nfft);
-H_pe = rir_to_H(h_pe, nfft);
-H_sm_tune = rir_to_H(h_sm_tune, nfft);
-H_se_tune = rir_to_H(h_se_tune, nfft);
-
-EM_tf = zeros(F, nFrames, num_mon_mics);
-EE_tf = zeros(F, nFrames, num_err_mics);
-
-for k = 1:num_pri_src
-    for m = 1:num_mon_mics
-        EM_tf(:,:,m) = EM_tf(:,:,m) + H_pm(:,m,k) .* X{k};
+for j = 1:J
+    for m = 1:M
+        EM_tf_rm(:,:,m) = EM_tf_rm(:,:,m) + H_pm(:,m,j) .* X_tune{j};
     end
-    for e = 1:num_err_mics
-        EE_tf(:,:,e) = EE_tf(:,:,e) + H_pe(:,e,k) .* X{k};
+    for v = 1:V
+        EV_tf_rm(:,:,v) = EV_tf_rm(:,:,v) + H_pv(:,v,j) .* X_tune{j};
     end
 end
 
-for l = 1:num_sec_src
-    for m = 1:num_mon_mics
-        EM_tf(:,:,m) = EM_tf(:,:,m) + H_sm_tune(:,m,l) .* U{l};
+% ---------- Primary + secondary fields for ReTM ----------
+EM_tf_retm = EM_tf_rm;
+EV_tf_retm = EV_tf_rm;
+
+for k = 1:K
+    for m = 1:M
+        EM_tf_retm(:,:,m) = EM_tf_retm(:,:,m) + H_sm_tune(:,m,k) .* U_tune{k};
     end
-    for e = 1:num_err_mics
-        EE_tf(:,:,e) = EE_tf(:,:,e) + H_se_tune(:,e,l) .* U{l};
+    for v = 1:V
+        EV_tf_retm(:,:,v) = EV_tf_retm(:,:,v) + H_sv_tune(:,v,k) .* U_tune{k};
     end
 end
 
-mon_sig = zeros(Ns, num_mon_mics);
-err_sig = zeros(Ns, num_err_mics);
+% Convert to time domain
+mon_sig_rm   = zeros(Ns_seg, M);
+virt_sig_rm  = zeros(Ns_seg, V);
+mon_sig_retm = zeros(Ns_seg, M);
+virt_sig_retm= zeros(Ns_seg, V);
 
-for m = 1:num_mon_mics
-    mon_sig(:,m) = force_len(istft(EM_tf(:,:,m), fs, ...
+for m = 1:M
+    mon_sig_rm(:,m) = force_len(istft(EM_tf_rm(:,:,m), fs, ...
         'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided'), Ns);
+        'FFTLength', nfft, 'FrequencyRange', 'onesided'), Ns_seg);
+
+    mon_sig_retm(:,m) = force_len(istft(EM_tf_retm(:,:,m), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided'), Ns_seg);
 end
 
-for e = 1:num_err_mics
-    err_sig(:,e) = force_len(istft(EE_tf(:,:,e), fs, ...
+for v = 1:V
+    virt_sig_rm(:,v) = force_len(istft(EV_tf_rm(:,:,v), fs, ...
         'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided'), Ns);
+        'FFTLength', nfft, 'FrequencyRange', 'onesided'), Ns_seg);
+
+    virt_sig_retm(:,v) = force_len(istft(EV_tf_retm(:,:,v), fs, ...
+        'Window', win, 'OverlapLength', wlen-hop, ...
+        'FFTLength', nfft, 'FrequencyRange', 'onesided'), Ns_seg);
 end
 
 %% ============================================================
-% Estimate ReTM and RM
+% Estimate ReTM and RM separately
 %% ============================================================
 fprintf('Estimating ReTM...\n');
-[retm_est, ~] = retm_estimate(err_sig, mon_sig, ...
+[retm_est, ~] = retm_estimate(virt_sig_retm, mon_sig_retm, ...
     'fs', fs, 'wlen', wlen, 'nfft', nfft, 'hop', hop);
 
 fprintf('Estimating RM...\n');
-[rm_est, ~] = rm_estimate(err_sig, mon_sig, ...
+[rm_est, ~] = rm_estimate(virt_sig_rm, mon_sig_rm, ...
     'fs', fs, 'wlen', wlen, 'nfft', nfft, 'hop', hop, 'reg', 1e-6);
 
+fprintf('size(retm_est) = %s\n', mat2str(size(retm_est)));
+fprintf('size(rm_est)   = %s\n', mat2str(size(rm_est)));
+
 %% ============================================================
-% Scenario 3 control settings
+% Control config
 %% ============================================================
 cfg = struct();
-cfg.t_start = 30;
-cfg.t_end   = 70;
-cfg.skipFrames = 60;
 cfg.mu = 8e-4;
 cfg.pwr_floor = 1e-6;
 cfg.leak = 1e-5;
 cfg.f_lo = 20;
 cfg.f_hi = 600;
-cfg.pPlot = 1;
+cfg.skipFrames = 60;
 
 %% ============================================================
-% Run ReTM
+% Run scenario 2 and scenario 3
 %% ============================================================
-fprintf('\nRunning Scenario 3 with ReTM...\n');
-outReTM = run_scenario3_control( ...
+fprintf('\nRunning Scenario 2 (no sec-path change) with ReTM...\n');
+out2_ReTM = run_control( ...
     'ReTM', retm_est, ...
-    h_pm, h_pee, ...
-    h_sm_ctrl, h_see_ctrl, ...
-    H_sm_tune, H_se_tune, ...
-    src, fs, wlen, hop, nfft, win, cfg);
+    H_pm, H_pv, H_peval, ...
+    H_sm_tune, H_sv_tune, H_seval_tune, ...
+    H_sm_tune, H_sv_tune, H_seval_tune, ...
+    src_scn2, fs, wlen, hop, nfft, win, cfg);
 
-%% ============================================================
-% Run RM
-%% ============================================================
-fprintf('\nRunning Scenario 3 with RM...\n');
-outRM = run_scenario3_control( ...
+fprintf('\nRunning Scenario 2 (no sec-path change) with RM...\n');
+out2_RM = run_control( ...
     'RM', rm_est, ...
-    h_pm, h_pee, ...
-    h_sm_ctrl, h_see_ctrl, ...
-    H_sm_tune, H_se_tune, ...
-    src, fs, wlen, hop, nfft, win, cfg);
+    H_pm, H_pv, H_peval, ...
+    H_sm_tune, H_sv_tune, H_seval_tune, ...
+    H_sm_tune, H_sv_tune, H_seval_tune, ...
+    src_scn2, fs, wlen, hop, nfft, win, cfg);
+
+fprintf('\nRunning Scenario 3 (changed sec-path) with ReTM...\n');
+out3_ReTM = run_control( ...
+    'ReTM', retm_est, ...
+    H_pm, H_pv, H_peval, ...
+    H_sm_tune, H_sv_tune, H_seval_tune, ...
+    H_sm_ctrl, H_sv_ctrl, H_seval_ctrl, ...
+    src_scn3, fs, wlen, hop, nfft, win, cfg);
+
+fprintf('\nRunning Scenario 3 (changed sec-path) with RM...\n');
+out3_RM = run_control( ...
+    'RM', rm_est, ...
+    H_pm, H_pv, H_peval, ...
+    H_sm_tune, H_sv_tune, H_seval_tune, ...
+    H_sm_ctrl, H_sv_ctrl, H_seval_ctrl, ...
+    src_scn3, fs, wlen, hop, nfft, win, cfg);
 
 %% ============================================================
-% PSD / NR plots
+% Plot Fig. 6(a) and 6(b)-style spectra
 %% ============================================================
-p = cfg.pPlot;
 trim = 2*wlen;
-nwel = 4096;
-nover = round(0.75*nwel);
-nfftW = 4096;
+p = 1;
 
-xb = outReTM.eval_off(trim:end-trim,p);
-xa_retm = outReTM.eval_on(trim:end-trim,p);
-xa_rm   = outRM.eval_on(trim:end-trim,p);
+% Scenario 2
+x2_off  = out2_ReTM.eval_off(trim:end-trim, p);
+x2_retm = out2_ReTM.eval_on(trim:end-trim, p);
+x2_rm   = out2_RM.eval_on(trim:end-trim, p);
 
-[Pb, f] = pwelch(xb, hann(nwel,'periodic'), nover, nfftW, fs);
-[Pa_retm, ~] = pwelch(xa_retm, hann(nwel,'periodic'), nover, nfftW, fs);
-[Pa_rm, ~]   = pwelch(xa_rm, hann(nwel,'periodic'), nover, nfftW, fs);
+[P2b, f_plot] = stft_avg_power(x2_off, fs, win, hop, nfft);
+[P2r, ~]      = stft_avg_power(x2_retm, fs, win, hop, nfft);
+[P2m, ~]      = stft_avg_power(x2_rm, fs, win, hop, nfft);
 
-Pb_dB      = 10*log10(max(Pb, 1e-20));
-Pa_retm_dB = 10*log10(max(Pa_retm, 1e-20));
-Pa_rm_dB   = 10*log10(max(Pa_rm, 1e-20));
+P2b_dB = 10*log10(max(P2b,1e-20));
+P2r_dB = 10*log10(max(P2r,1e-20));
+P2m_dB = 10*log10(max(P2m,1e-20));
 
-NR_retm = Pb_dB - Pa_retm_dB;
-NR_rm   = Pb_dB - Pa_rm_dB;
-
-figure('Name','Scenario 3 PSD');
-plot(f, Pa_retm_dB, 'k', 'LineWidth', 1.5); hold on;
-plot(f, Pa_rm_dB, '--m', 'LineWidth', 1.5);
-plot(f, Pb_dB, ':b', 'LineWidth', 1.5);
+figure('Name','Fig 6(a) reproduction');
+plot(f_plot, P2r_dB, 'k', 'LineWidth', 1.8); hold on;
+plot(f_plot, P2m_dB, '--', 'Color', [1 0 1], 'LineWidth', 1.8);
+plot(f_plot, P2b_dB, ':b', 'LineWidth', 2.0);
 grid on;
 xlabel('Frequency (Hz)');
-ylabel('Power / PSD (dB/Hz)');
-legend('ReTM','RM','No ANC','Location','best');
-title('Scenario 3: With secondary-path change');
+ylabel('Power (dB)');
+legend('ReTM', 'RM', 'No ANC', 'Location', 'best');
+title('Scenario 2: Without secondary paths change');
 xlim([0 600]);
 
-figure('Name','Scenario 3 Noise Reduction');
-plot(f, NR_retm, 'k', 'LineWidth', 1.5); hold on;
-plot(f, NR_rm, '--m', 'LineWidth', 1.5);
-yline(0,'k:');
+% Scenario 3
+x3_off  = out3_ReTM.eval_off(trim:end-trim, p);
+x3_retm = out3_ReTM.eval_on(trim:end-trim, p);
+x3_rm   = out3_RM.eval_on(trim:end-trim, p);
+
+[P3b, f_plot] = stft_avg_power(x3_off, fs, win, hop, nfft);
+[P3r, ~]      = stft_avg_power(x3_retm, fs, win, hop, nfft);
+[P3m, ~]      = stft_avg_power(x3_rm, fs, win, hop, nfft);
+
+P3b_dB = 10*log10(max(P3b,1e-20));
+P3r_dB = 10*log10(max(P3r,1e-20));
+P3m_dB = 10*log10(max(P3m,1e-20));
+
+figure('Name','Fig 6(b) reproduction');
+plot(f_plot, P3r_dB, 'k', 'LineWidth', 1.8); hold on;
+plot(f_plot, P3m_dB, '--', 'Color', [1 0 1], 'LineWidth', 1.8);
+plot(f_plot, P3b_dB, ':b', 'LineWidth', 2.0);
+grid on;
+xlabel('Frequency (Hz)');
+ylabel('Power (dB)');
+legend('ReTM', 'RM', 'No ANC', 'Location', 'best');
+title('Scenario 3: With secondary paths change');
+xlim([0 600]);
+
+% Diagnostic NR plot
+NR3_retm = P3b_dB - P3r_dB;
+NR3_rm   = P3b_dB - P3m_dB;
+
+figure('Name','Scenario 3 NR');
+plot(f_plot, NR3_retm, 'k', 'LineWidth', 1.8); hold on;
+plot(f_plot, NR3_rm, '--', 'Color', [1 0 1], 'LineWidth', 1.8);
+yline(0, 'k:');
 grid on;
 xlabel('Frequency (Hz)');
 ylabel('Noise Reduction (dB)');
@@ -308,194 +371,236 @@ legend('ReTM','RM','Location','best');
 title('Scenario 3: Noise reduction');
 xlim([0 600]);
 
-fprintf('\nAvg NR 50-400 Hz: ReTM = %.2f dB, RM = %.2f dB\n', ...
-    nanmean(NR_retm(f>=50 & f<=400)), nanmean(NR_rm(f>=50 & f<=400)));
+idx_low = f_plot >= 20 & f_plot < 400;
+idx_hi  = f_plot >= 400 & f_plot <= 600;
+
+fprintf('\nScenario 3 average residual difference (RM - ReTM):\n');
+fprintf('20-400 Hz  : %.4f dB\n', mean(P3m_dB(idx_low) - P3r_dB(idx_low)));
+fprintf('400-600 Hz : %.4f dB\n', mean(P3m_dB(idx_hi)  - P3r_dB(idx_hi)));
 
 %% ============================================================
-% Local helper functions
+% Local functions
 %% ============================================================
 
-function H = rir_to_H(h, nfft)
-F = nfft/2 + 1;
-[~, nch, nsrc] = size(h);
-H = zeros(F, nch, nsrc);
-for s = 1:nsrc
-    for c = 1:nch
-        tmp = fft(h(:,c,s), nfft);
-        H(:,c,s) = tmp(1:F);
+function y = make_exact_length(x, N)
+    x = x(:);
+    if numel(x) > N
+        y = x(1:N);
+    else
+        y = repmat(x, ceil(N/numel(x)), 1);
+        y = y(1:N);
     end
-end
 end
 
 function y = force_len(x, N)
-x = x(:);
-if numel(x) >= N
-    y = x(1:N);
-else
-    y = [x; zeros(N-numel(x),1)];
-end
-end
-
-function out = run_scenario3_control(methodName, map_est, ...
-    h_pm, h_pee, h_sm_ctrl, h_see_ctrl, ...
-    H_sm_tune, H_se_tune, ...
-    src_full, fs, wlen, hop, nfft, win, cfg)
-
-F = nfft/2 + 1;
-t_start = cfg.t_start;
-t_end   = cfg.t_end;
-n_start = floor(t_start*fs) + 1;
-n_end   = floor(t_end*fs);
-
-src = src_full(n_start:n_end,:);
-Ns = size(src,1);
-K = size(src,2);
-M = size(h_pm,2);
-Lspk = size(h_sm_ctrl,3);
-Neval = size(h_pee,2);
-V = size(map_est,3);
-
-RVM = reshape(map_est(:,1,:,:), [F, V, M]);
-
-% STFT of references
-X = cell(K,1);
-for k = 1:K
-    X{k} = stft(src(:,k), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided');
-end
-nFrames = size(X{1},2);
-
-% Actual control-stage paths
-Hpm = rir_to_H(h_pm, nfft);
-Hsm_ctrl = rir_to_H(h_sm_ctrl, nfft);
-Hpee = rir_to_H(h_pee, nfft);
-Hsee_ctrl = rir_to_H(h_see_ctrl, nfft);
-
-% Primary fields
-Dm_tf = zeros(F, nFrames, M);
-Deval_tf_off = zeros(F, nFrames, Neval);
-
-for k = 1:K
-    for m = 1:M
-        Dm_tf(:,:,m) = Dm_tf(:,:,m) + Hpm(:,m,k) .* X{k};
-    end
-    for p = 1:Neval
-        Deval_tf_off(:,:,p) = Deval_tf_off(:,:,p) + Hpee(:,p,k) .* X{k};
+    x = x(:);
+    if numel(x) >= N
+        y = x(1:N);
+    else
+        y = [x; zeros(N-numel(x),1)];
     end
 end
 
-% Controller state
-Wf = zeros(F, Lspk, K);
-EV_tf = zeros(F, nFrames, V);
-Deval_tf_on = zeros(F, nFrames, Neval);
-
-Xmat = zeros(F, nFrames, K);
-for k = 1:K
-    Xmat(:,:,k) = X{k};
-end
-
-f_axis = (0:F-1)' * fs/nfft;
-adapt_bins = find(f_axis >= cfg.f_lo & f_axis <= cfg.f_hi);
-
-skipFrames = cfg.skipFrames;
-tfrm_start = 1 + skipFrames;
-tfrm_end   = nFrames - skipFrames;
-
-for tfrm = tfrm_start:tfrm_end
-
-    % Speaker outputs
-    Yf = zeros(F, Lspk);
-    for l = 1:Lspk
-        acc = zeros(F,1);
-        for k = 1:K
-            acc = acc + Wf(:,l,k) .* Xmat(:,tfrm,k);
+function H = rir_to_H(h, nfft)
+    F = nfft/2 + 1;
+    [~, nch, nsrc] = size(h);
+    H = zeros(F, nch, nsrc);
+    for s = 1:nsrc
+        for c = 1:nch
+            tmp = fft(h(:,c,s), nfft);
+            H(:,c,s) = tmp(1:F);
         end
-        Yf(:,l) = acc;
     end
+end
 
-    % Actual plant uses CHANGED secondary path
-    eM_tf_frame = squeeze(Dm_tf(:,tfrm,:));
-    for l = 1:Lspk
-        eM_tf_frame = eM_tf_frame + squeeze(Hsm_ctrl(:,:,l)) .* Yf(:,l);
-    end
+function RVM = extract_map(map_est)
+    sz = size(map_est);
 
-    % Virtual error estimate
-    for fbin = 1:F
-        eMf = reshape(eM_tf_frame(fbin,:), [M,1]);
-
-        if strcmpi(methodName, 'ReTM')
-            Rf = reshape(RVM(fbin,:,:), [V,M]);
-            eVf = Rf * eMf;
+    if ndims(map_est) == 4
+        % expected common layout: [F x 1 x V x M]
+        if sz(2) == 1
+            RVM = squeeze(map_est(:,1,:,:));   % [F x V x M]
         else
-            Of = reshape(RVM(fbin,:,:), [V,M]);
-            SM_t = reshape(H_sm_tune(fbin,:,:), [M,Lspk]);
-            SV_t = reshape(H_se_tune(fbin,:,:), [V,Lspk]);
-            y_f = reshape(Yf(fbin,:), [Lspk,1]);
+            error('Unexpected map_est size %s. Adjust extract_map().', mat2str(sz));
+        end
+    elseif ndims(map_est) == 3
+        % already [F x V x M]
+        RVM = map_est;
+    else
+        error('Unsupported map_est size %s', mat2str(sz));
+    end
+end
 
-            eVf = Of * (eMf - SM_t*y_f) + SV_t*y_f;
+function [Pavg, f] = stft_avg_power(x, fs, win, hop, nfft)
+    S = stft(x, fs, ...
+        'Window', win, ...
+        'OverlapLength', length(win)-hop, ...
+        'FFTLength', nfft, ...
+        'FrequencyRange', 'onesided');
+    P = abs(S).^2;
+    Pavg = mean(P, 2);
+    f = (0:nfft/2)' * fs/nfft;
+end
+
+function out = run_control(methodName, map_est, ...
+    H_pm, H_pv, H_peval, ...
+    H_sm_model, H_sv_model, H_seval_model, ...
+    H_sm_actual, H_sv_actual, H_seval_actual, ...
+    src_ctrl, fs, wlen, hop, nfft, win, cfg)
+
+    F = nfft/2 + 1;
+    J = size(H_pm, 3);
+    M = size(H_pm, 2);
+    V = size(H_pv, 2);
+    K = size(H_sm_actual, 3);
+    P_eval = size(H_peval, 2);
+    Ns = size(src_ctrl, 1);
+
+    RVM = extract_map(map_est);   % [F x V x M]
+
+    % STFT of control-stage references
+    X = cell(J,1);
+    for j = 1:J
+        X{j} = stft(src_ctrl(:,j), fs, ...
+            'Window', win, ...
+            'OverlapLength', wlen-hop, ...
+            'FFTLength', nfft, ...
+            'FrequencyRange', 'onesided');
+    end
+    nFrames = size(X{1},2);
+
+    Xmat = zeros(F, nFrames, J);
+    for j = 1:J
+        Xmat(:,:,j) = X{j};
+    end
+
+    % Primary fields only
+    Dm_tf     = zeros(F, nFrames, M);
+    Dv_tf_off = zeros(F, nFrames, V);
+    De_tf_off = zeros(F, nFrames, P_eval);
+
+    for j = 1:J
+        for m = 1:M
+            Dm_tf(:,:,m) = Dm_tf(:,:,m) + H_pm(:,m,j) .* Xmat(:,:,j);
+        end
+        for v = 1:V
+            Dv_tf_off(:,:,v) = Dv_tf_off(:,:,v) + H_pv(:,v,j) .* Xmat(:,:,j);
+        end
+        for p = 1:P_eval
+            De_tf_off(:,:,p) = De_tf_off(:,:,p) + H_peval(:,p,j) .* Xmat(:,:,j);
+        end
+    end
+
+    % Controller state
+    Wf = zeros(F, K, J);
+    Dv_tf_on = zeros(F, nFrames, V);
+    De_tf_on = zeros(F, nFrames, P_eval);
+
+    f_axis = (0:F-1)' * fs/nfft;
+    adapt_bins = find(f_axis >= cfg.f_lo & f_axis <= cfg.f_hi);
+
+    skipFrames = cfg.skipFrames;
+    tfrm_start = 1 + skipFrames;
+    tfrm_end   = nFrames - skipFrames;
+
+    for tfrm = tfrm_start:tfrm_end
+
+        % Secondary output
+        Yf = zeros(F, K);
+        for k = 1:K
+            acc = zeros(F,1);
+            for j = 1:J
+                acc = acc + Wf(:,k,j) .* Xmat(:,tfrm,j);
+            end
+            Yf(:,k) = acc;
         end
 
-        EV_tf(fbin,tfrm,:) = eVf;
-    end
+        % Actual monitoring residual with actual secondary path
+        eM_frame = squeeze(Dm_tf(:,tfrm,:));   % [F x M]
+        for k = 1:K
+            eM_frame = eM_frame + squeeze(H_sm_actual(:,:,k)) .* Yf(:,k);
+        end
 
-    % Evaluation microphones use CHANGED path
-    Deval_frame = squeeze(Deval_tf_off(:,tfrm,:));
-    for l = 1:Lspk
-        Deval_frame = Deval_frame + squeeze(Hsee_ctrl(:,:,l)) .* Yf(:,l);
-    end
-    Deval_tf_on(:,tfrm,:) = Deval_frame;
+        % Actual virtual residual
+        eV_actual = squeeze(Dv_tf_off(:,tfrm,:));  % [F x V]
+        for k = 1:K
+            eV_actual = eV_actual + squeeze(H_sv_actual(:,:,k)) .* Yf(:,k);
+        end
+        Dv_tf_on(:,tfrm,:) = eV_actual;
 
-    % Controller update uses OLD / TUNING path model
-    for ib = 1:numel(adapt_bins)
-        fbin = adapt_bins(ib);
+        % Actual eval residual
+        eEval_actual = squeeze(De_tf_off(:,tfrm,:)); % [F x P_eval]
+        for k = 1:K
+            eEval_actual = eEval_actual + squeeze(H_seval_actual(:,:,k)) .* Yf(:,k);
+        end
+        De_tf_on(:,tfrm,:) = eEval_actual;
 
-        Xvec = reshape(Xmat(fbin,tfrm,:), [K,1]);
-        eVf = reshape(EV_tf(fbin,tfrm,:), [V,1]);
+        % Adaptation
+        for ii = 1:numel(adapt_bins)
+            fbin = adapt_bins(ii);
 
-        SM_model = reshape(H_sm_tune(fbin,:,:), [M,Lspk]);   % model used in controller
+            Xvec = reshape(Xmat(fbin,tfrm,:), [J,1]);
+            eMf  = reshape(eM_frame(fbin,:), [M,1]);
 
-        tmp = eVf_to_monitor(methodName, fbin, eVf, RVM, H_sm_tune, H_se_tune, Yf, M, V, Lspk);
-        g = (SM_model') * tmp;
+            if strcmpi(methodName, 'ReTM')
+                % eV_hat = RVM * eM
+                Rf = reshape(RVM(fbin,:,:), [V,M]);
+                eV_hat = Rf * eMf;
 
-        xpow = sum(abs(Xvec).^2);
-        eta = cfg.mu / (xpow + cfg.pwr_floor);
+                % Proposed Fx path: replace SV by RVM*[0 SM]
+                SMm = reshape(H_sm_model(fbin,:,:), [M,K]);
+                Gf = Rf * SMm;          % [V x K]
+                g  = Gf' * eV_hat;      % [K x 1]
 
-        for l = 1:Lspk
+            else
+                % Conventional RM
+                Of  = reshape(RVM(fbin,:,:), [V,M]);  % rm_est = O_VM
+                SMm = reshape(H_sm_model(fbin,:,:), [M,K]);
+                SVm = reshape(H_sv_model(fbin,:,:), [V,K]);
+                y_f = reshape(Yf(fbin,:), [K,1]);
+
+                % Conventional residual estimate
+                eV_hat = Of * (eMf - SMm*y_f) + SVm*y_f;
+
+                % Conventional FxLMS uses SV
+                g = SVm' * eV_hat;      % [K x 1]
+            end
+
+            xpow = sum(abs(Xvec).^2);
+            eta = cfg.mu / (xpow + cfg.pwr_floor);
+
             for k = 1:K
-                Wf(fbin,l,k) = (1-cfg.leak) * Wf(fbin,l,k) - eta * conj(Xvec(k)) * g(l);
+                for j = 1:J
+                    Wf(fbin,k,j) = (1-cfg.leak) * Wf(fbin,k,j) ...
+                                 - eta * conj(Xvec(j)) * g(k);
+                end
             end
         end
     end
-end
 
-Deval_tf_on(:,1:tfrm_start-1,:) = Deval_tf_off(:,1:tfrm_start-1,:);
-Deval_tf_on(:,tfrm_end+1:end,:) = Deval_tf_off(:,tfrm_end+1:end,:);
+    % Edge frames untouched
+    Dv_tf_on(:,1:tfrm_start-1,:) = Dv_tf_off(:,1:tfrm_start-1,:);
+    Dv_tf_on(:,tfrm_end+1:end,:) = Dv_tf_off(:,tfrm_end+1:end,:);
+    De_tf_on(:,1:tfrm_start-1,:) = De_tf_off(:,1:tfrm_start-1,:);
+    De_tf_on(:,tfrm_end+1:end,:) = De_tf_off(:,tfrm_end+1:end,:);
 
-eval_off = zeros(Ns,Neval);
-eval_on  = zeros(Ns,Neval);
-for p = 1:Neval
-    eval_off(:,p) = force_len(istft(Deval_tf_off(:,:,p), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided'), Ns);
-    eval_on(:,p)  = force_len(istft(Deval_tf_on(:,:,p), fs, ...
-        'Window', win, 'OverlapLength', wlen-hop, ...
-        'FFTLength', nfft, 'FrequencyRange', 'onesided'), Ns);
-end
+    eval_off = zeros(Ns, P_eval);
+    eval_on  = zeros(Ns, P_eval);
 
-out.eval_off = eval_off;
-out.eval_on  = eval_on;
-out.t = ((n_start-1)+(0:Ns-1))'/fs;
-end
+    for p = 1:P_eval
+        eval_off(:,p) = force_len(istft(De_tf_off(:,:,p), fs, ...
+            'Window', win, ...
+            'OverlapLength', wlen-hop, ...
+            'FFTLength', nfft, ...
+            'FrequencyRange', 'onesided'), Ns);
 
-function tmp = eVf_to_monitor(methodName, fbin, eVf, RVM, H_sm_tune, H_se_tune, Yf, M, V, Lspk)
-    if strcmpi(methodName, 'ReTM')
-        Rf = reshape(RVM(fbin,:,:), [V, M]);   % [V x M]
-        tmp = Rf' * eVf;                       % [M x 1]
-    else
-        Of = reshape(RVM(fbin,:,:), [V, M]);   % [V x M]
-        tmp = Of' * eVf;                       % [M x 1]
+        eval_on(:,p) = force_len(istft(De_tf_on(:,:,p), fs, ...
+            'Window', win, ...
+            'OverlapLength', wlen-hop, ...
+            'FFTLength', nfft, ...
+            'FrequencyRange', 'onesided'), Ns);
     end
-    
-    tmp = reshape(tmp, [M, 1]);
+
+    out.eval_off = eval_off;
+    out.eval_on  = eval_on;
 end
