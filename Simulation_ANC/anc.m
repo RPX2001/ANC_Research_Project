@@ -15,7 +15,7 @@ rng(0);
 c = 340;
 fs = 8000;
 Lroom = [8 7 4];
-beta = 0.4;              % approx 500 ms T60 setting
+beta = 0.4;
 n = 4096;
 mtype = 'omnidirectional';
 order = -1;
@@ -29,8 +29,6 @@ M = 8;                   % monitoring microphones
 V = 6;                   % virtual microphones
 P_eval = 2;              % last pair for evaluation
 
-% Paper uses 60 s tuning and then 60 s unseen noise for scenario 2
-% and another 60 s unseen noise for scenario 3.
 Tseg = 60;
 Ns_seg = fs * Tseg;
 N_total = 3 * Ns_seg;
@@ -42,7 +40,7 @@ win  = hann(wlen,'periodic');
 F    = nfft/2 + 1;
 
 %% ============================================================
-% Geometry (paper-faithful)
+% Geometry
 %% ============================================================
 mon_mics = [ 0.15   0.15  -0.15;
              0.15  -0.15  -0.15;
@@ -66,17 +64,16 @@ virt_mics = [ 0.05  0.10  0;
 eval_idx = [5 6];
 eval_mics = virt_mics(eval_idx,:);
 
-% Baseline tuning position in paper
+% Baseline tuning secondary positions
 sec_sources_tune = [0   0.30 0;
                     0  -0.30 0];
 
-% Scenario 3 changed position in paper
+% Scenario 3 changed secondary positions
 sec_sources_ctrl = [0   0.35 0;
                     0  -0.35 0];
 
 %% ============================================================
 % Load source signals
-% Need 180 s total = 60 s tuning + 60 s scenario 2 + 60 s scenario 3
 %% ============================================================
 fprintf('Loading source signals...\n');
 
@@ -94,12 +91,12 @@ x2 = make_exact_length(x2, N_total);
 
 src_all = [x1, x2];
 
-src_tune = src_all(1:Ns_seg, :);                         % first 60 s
-src_scn2 = src_all(Ns_seg+1:2*Ns_seg, :);                % second 60 s
-src_scn3 = src_all(2*Ns_seg+1:3*Ns_seg, :);              % third 60 s
+src_tune = src_all(1:Ns_seg, :);
+src_scn2 = src_all(Ns_seg+1:2*Ns_seg, :);
+src_scn3 = src_all(2*Ns_seg+1:3*Ns_seg, :);
 
 %% ============================================================
-% Generate RIRs
+% Generate impulse responses
 %% ============================================================
 fprintf('Generating impulse responses...\n');
 
@@ -116,7 +113,6 @@ for j = 1:J
         Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
 end
 
-% Tuning-stage secondary paths
 h_sm_tune = zeros(n, M, K);
 h_sv_tune = zeros(n, V, K);
 h_seval_tune = zeros(n, P_eval, K);
@@ -130,7 +126,6 @@ for k = 1:K
         Lroom, beta, n, mtype, order, dim, orientation, hp_filter).';
 end
 
-% Scenario 3 changed secondary paths
 h_sm_ctrl = zeros(n, M, K);
 h_sv_ctrl = zeros(n, V, K);
 h_seval_ctrl = zeros(n, P_eval, K);
@@ -161,13 +156,11 @@ H_seval_ctrl = rir_to_H(h_seval_ctrl, nfft);
 
 %% ============================================================
 % Tuning-stage data
-% IMPORTANT:
-%   ReTM  -> primary + secondary active
-%   RM    -> primary only
+% ReTM: primary + secondary active
+% RM  : primary only
 %% ============================================================
 fprintf('Generating tuning-stage signals for ReTM and RM separately...\n');
 
-% Primary references STFT
 X_tune = cell(J,1);
 for j = 1:J
     X_tune{j} = stft(src_tune(:,j), fs, ...
@@ -178,7 +171,6 @@ for j = 1:J
 end
 nFrames_tune = size(X_tune{1},2);
 
-% Secondary random noise only for ReTM tuning
 U_tune = cell(K,1);
 sec_noise = randn(Ns_seg, K);
 for k = 1:K
@@ -190,7 +182,6 @@ for k = 1:K
         'FrequencyRange', 'onesided');
 end
 
-% ---------- Primary-only fields for RM ----------
 EM_tf_rm = zeros(F, nFrames_tune, M);
 EV_tf_rm = zeros(F, nFrames_tune, V);
 
@@ -203,7 +194,6 @@ for j = 1:J
     end
 end
 
-% ---------- Primary + secondary fields for ReTM ----------
 EM_tf_retm = EM_tf_rm;
 EV_tf_retm = EV_tf_rm;
 
@@ -216,11 +206,10 @@ for k = 1:K
     end
 end
 
-% Convert to time domain
-mon_sig_rm   = zeros(Ns_seg, M);
-virt_sig_rm  = zeros(Ns_seg, V);
-mon_sig_retm = zeros(Ns_seg, M);
-virt_sig_retm= zeros(Ns_seg, V);
+mon_sig_rm    = zeros(Ns_seg, M);
+virt_sig_rm   = zeros(Ns_seg, V);
+mon_sig_retm  = zeros(Ns_seg, M);
+virt_sig_retm = zeros(Ns_seg, V);
 
 for m = 1:M
     mon_sig_rm(:,m) = force_len(istft(EM_tf_rm(:,:,m), fs, ...
@@ -243,7 +232,7 @@ for v = 1:V
 end
 
 %% ============================================================
-% Estimate ReTM and RM separately
+% Estimate ReTM and RM
 %% ============================================================
 fprintf('Estimating ReTM...\n');
 [retm_est, ~] = retm_estimate(virt_sig_retm, mon_sig_retm, ...
@@ -268,7 +257,7 @@ cfg.f_hi = 600;
 cfg.skipFrames = 60;
 
 %% ============================================================
-% Run scenario 2 and scenario 3
+% Run scenario 2
 %% ============================================================
 fprintf('\nRunning Scenario 2 (no sec-path change) with ReTM...\n');
 out2_ReTM = run_control( ...
@@ -286,11 +275,17 @@ out2_RM = run_control( ...
     H_sm_tune, H_sv_tune, H_seval_tune, ...
     src_scn2, fs, wlen, hop, nfft, win, cfg);
 
+%% ============================================================
+% Run scenario 3
+% IMPORTANT FIX:
+%   ReTM uses UPDATED monitoring secondary path model H_sm_ctrl
+%   RM keeps old virtual/model paths
+%% ============================================================
 fprintf('\nRunning Scenario 3 (changed sec-path) with ReTM...\n');
 out3_ReTM = run_control( ...
     'ReTM', retm_est, ...
     H_pm, H_pv, H_peval, ...
-    H_sm_tune, H_sv_tune, H_seval_tune, ...
+    H_sm_ctrl, H_sv_tune, H_seval_tune, ...
     H_sm_ctrl, H_sv_ctrl, H_seval_ctrl, ...
     src_scn3, fs, wlen, hop, nfft, win, cfg);
 
@@ -303,15 +298,15 @@ out3_RM = run_control( ...
     src_scn3, fs, wlen, hop, nfft, win, cfg);
 
 %% ============================================================
-% Plot Fig. 6(a) and 6(b)-style spectra
+% Plot spectra
 %% ============================================================
 trim = 2*wlen;
 p = 1;
 
 % Scenario 2
-x2_off  = out2_ReTM.eval_off(trim:end-trim, p);
-x2_retm = out2_ReTM.eval_on(trim:end-trim, p);
-x2_rm   = out2_RM.eval_on(trim:end-trim, p);
+x2_off  = mean(out2_ReTM.eval_off(trim:end-trim, :), 2);
+x2_retm = mean(out2_ReTM.eval_on(trim:end-trim, :), 2);
+x2_rm   = mean(out2_RM.eval_on(trim:end-trim, :), 2);
 
 [P2b, f_plot] = stft_avg_power(x2_off, fs, win, hop, nfft);
 [P2r, ~]      = stft_avg_power(x2_retm, fs, win, hop, nfft);
@@ -333,9 +328,9 @@ title('Scenario 2: Without secondary paths change');
 xlim([0 600]);
 
 % Scenario 3
-x3_off  = out3_ReTM.eval_off(trim:end-trim, p);
-x3_retm = out3_ReTM.eval_on(trim:end-trim, p);
-x3_rm   = out3_RM.eval_on(trim:end-trim, p);
+x3_off  = mean(out3_ReTM.eval_off(trim:end-trim, :), 2);
+x3_retm = mean(out3_ReTM.eval_on(trim:end-trim, :), 2);
+x3_rm   = mean(out3_RM.eval_on(trim:end-trim, :), 2);
 
 [P3b, f_plot] = stft_avg_power(x3_off, fs, win, hop, nfft);
 [P3r, ~]      = stft_avg_power(x3_retm, fs, win, hop, nfft);
@@ -344,6 +339,10 @@ x3_rm   = out3_RM.eval_on(trim:end-trim, p);
 P3b_dB = 10*log10(max(P3b,1e-20));
 P3r_dB = 10*log10(max(P3r,1e-20));
 P3m_dB = 10*log10(max(P3m,1e-20));
+
+P3b_dB = smoothdata(P3b_dB, 'movmean', 7);
+P3r_dB = smoothdata(P3r_dB, 'movmean', 7);
+P3m_dB = smoothdata(P3m_dB, 'movmean', 7);
 
 figure('Name','Fig 6(b) reproduction');
 plot(f_plot, P3r_dB, 'k', 'LineWidth', 1.8); hold on;
@@ -356,7 +355,7 @@ legend('ReTM', 'RM', 'No ANC', 'Location', 'best');
 title('Scenario 3: With secondary paths change');
 xlim([0 600]);
 
-% Diagnostic NR plot
+% Scenario 3 NR
 NR3_retm = P3b_dB - P3r_dB;
 NR3_rm   = P3b_dB - P3m_dB;
 
@@ -417,14 +416,12 @@ function RVM = extract_map(map_est)
     sz = size(map_est);
 
     if ndims(map_est) == 4
-        % expected common layout: [F x 1 x V x M]
         if sz(2) == 1
             RVM = squeeze(map_est(:,1,:,:));   % [F x V x M]
         else
             error('Unexpected map_est size %s. Adjust extract_map().', mat2str(sz));
         end
     elseif ndims(map_est) == 3
-        % already [F x V x M]
         RVM = map_est;
     else
         error('Unsupported map_est size %s', mat2str(sz));
@@ -458,7 +455,6 @@ function out = run_control(methodName, map_est, ...
 
     RVM = extract_map(map_est);   % [F x V x M]
 
-    % STFT of control-stage references
     X = cell(J,1);
     for j = 1:J
         X{j} = stft(src_ctrl(:,j), fs, ...
@@ -474,7 +470,6 @@ function out = run_control(methodName, map_est, ...
         Xmat(:,:,j) = X{j};
     end
 
-    % Primary fields only
     Dm_tf     = zeros(F, nFrames, M);
     Dv_tf_off = zeros(F, nFrames, V);
     De_tf_off = zeros(F, nFrames, P_eval);
@@ -491,7 +486,6 @@ function out = run_control(methodName, map_est, ...
         end
     end
 
-    % Controller state
     Wf = zeros(F, K, J);
     Dv_tf_on = zeros(F, nFrames, V);
     De_tf_on = zeros(F, nFrames, P_eval);
@@ -505,7 +499,6 @@ function out = run_control(methodName, map_est, ...
 
     for tfrm = tfrm_start:tfrm_end
 
-        % Secondary output
         Yf = zeros(F, K);
         for k = 1:K
             acc = zeros(F,1);
@@ -515,27 +508,23 @@ function out = run_control(methodName, map_est, ...
             Yf(:,k) = acc;
         end
 
-        % Actual monitoring residual with actual secondary path
         eM_frame = squeeze(Dm_tf(:,tfrm,:));   % [F x M]
         for k = 1:K
             eM_frame = eM_frame + squeeze(H_sm_actual(:,:,k)) .* Yf(:,k);
         end
 
-        % Actual virtual residual
         eV_actual = squeeze(Dv_tf_off(:,tfrm,:));  % [F x V]
         for k = 1:K
             eV_actual = eV_actual + squeeze(H_sv_actual(:,:,k)) .* Yf(:,k);
         end
         Dv_tf_on(:,tfrm,:) = eV_actual;
 
-        % Actual eval residual
         eEval_actual = squeeze(De_tf_off(:,tfrm,:)); % [F x P_eval]
         for k = 1:K
             eEval_actual = eEval_actual + squeeze(H_seval_actual(:,:,k)) .* Yf(:,k);
         end
         De_tf_on(:,tfrm,:) = eEval_actual;
 
-        % Adaptation
         for ii = 1:numel(adapt_bins)
             fbin = adapt_bins(ii);
 
@@ -543,27 +532,22 @@ function out = run_control(methodName, map_est, ...
             eMf  = reshape(eM_frame(fbin,:), [M,1]);
 
             if strcmpi(methodName, 'ReTM')
-                % eV_hat = RVM * eM
                 Rf = reshape(RVM(fbin,:,:), [V,M]);
                 eV_hat = Rf * eMf;
 
-                % Proposed Fx path: replace SV by RVM*[0 SM]
+                % IMPORTANT: now uses H_sm_model passed from caller
                 SMm = reshape(H_sm_model(fbin,:,:), [M,K]);
-                Gf = Rf * SMm;          % [V x K]
-                g  = Gf' * eV_hat;      % [K x 1]
+                Gf = Rf * SMm;
+                g  = Gf' * eV_hat;
 
             else
-                % Conventional RM
-                Of  = reshape(RVM(fbin,:,:), [V,M]);  % rm_est = O_VM
+                Of  = reshape(RVM(fbin,:,:), [V,M]);
                 SMm = reshape(H_sm_model(fbin,:,:), [M,K]);
                 SVm = reshape(H_sv_model(fbin,:,:), [V,K]);
                 y_f = reshape(Yf(fbin,:), [K,1]);
 
-                % Conventional residual estimate
                 eV_hat = Of * (eMf - SMm*y_f) + SVm*y_f;
-
-                % Conventional FxLMS uses SV
-                g = SVm' * eV_hat;      % [K x 1]
+                g = SVm' * eV_hat;
             end
 
             xpow = sum(abs(Xvec).^2);
@@ -578,7 +562,6 @@ function out = run_control(methodName, map_est, ...
         end
     end
 
-    % Edge frames untouched
     Dv_tf_on(:,1:tfrm_start-1,:) = Dv_tf_off(:,1:tfrm_start-1,:);
     Dv_tf_on(:,tfrm_end+1:end,:) = Dv_tf_off(:,tfrm_end+1:end,:);
     De_tf_on(:,1:tfrm_start-1,:) = De_tf_off(:,1:tfrm_start-1,:);
