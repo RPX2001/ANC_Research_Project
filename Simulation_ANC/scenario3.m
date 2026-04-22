@@ -14,9 +14,20 @@ fprintf('=== RM vs ReTM Comparison (same scenario) ===\n');
 addpath(genpath('RIR_Generator'));
 addpath(genpath('ReTM'));
 
-% Scenario: secondary speakers moved to [0, +-0.35, 0] m before tuning
-sec_sources_override = [0  0.35 0;
-                        0 -0.35 0];
+% Keep scenario variables available inside new_anc_simulation.m
+preserve_workspace = true;
+
+% Paper-style Scenario 3: estimate with baseline path, then apply path change in control
+sec_sources_tune = [0  0.30 0;
+                    0 -0.30 0];
+sec_sources_ctrl = [0  0.45 0;
+                    0 -0.45 0];
+sec_sources_override = sec_sources_tune;
+
+% Focus adaptation and evaluation in low-frequency band (paper trend)
+adapt_f_low = 50;
+adapt_f_high = 600;
+apply_psd_shift = false;
 
 %% 1) Run common tuning stage (unchanged)
 fprintf('\n[1/4] Running common tuning stage using new_anc_simulation.m ...\n');
@@ -44,6 +55,7 @@ end
 if size(x1_ctrl,2) > 1
     x1_ctrl = mean(x1_ctrl, 2);
 end
+
 if size(x2_ctrl,2) > 1
     x2_ctrl = mean(x2_ctrl, 2);
 end
@@ -51,6 +63,7 @@ end
 if fs1_ctrl ~= fs
     x1_ctrl = resample(x1_ctrl, fs, fs1_ctrl);
 end
+
 if fs2_ctrl ~= fs
     x2_ctrl = resample(x2_ctrl, fs, fs2_ctrl);
 end
@@ -77,9 +90,38 @@ end
 
 src_control = [x1_ctrl, x2_ctrl];
 
-%% 3) RM control-stage ANC run with new source
+%% 3) RM control-stage ANC run with changed secondary path
 fprintf('[3/4] Running ANC control (RM) with buccaneer control-stage sources ...\n');
 
+
+% Scenario 3 path-change: change secondary path only for control stage
+sec_sources_override = sec_sources_ctrl;
+
+h_sm_override = zeros(n, num_mon_mics, num_sec_src);
+
+for l = 1:num_sec_src
+    h_sm_override(:,:,l) = rir_generator( ...
+        c, fs, mon_mics, sec_sources_override(l,:), ...
+        L, beta, n, mtype, order, dim, orientation, hp_filter).';
+end
+
+h_se_override = zeros(n, num_err_mics, num_sec_src);
+
+for l = 1:num_sec_src
+    h_se_override(:,:,l) = rir_generator( ...
+        c, fs, error_mics, sec_sources_override(l,:), ...
+        L, beta, n, mtype, order, dim, orientation, hp_filter).';
+end
+
+h_see_override = zeros(n, num_eval_err_mics, num_sec_src);
+
+for l = 1:num_sec_src
+    h_see_override(:,:,l) = rir_generator( ...
+        c, fs, eval_mic, sec_sources_override(l,:), ...
+        L, beta, n, mtype, order, dim, orientation, hp_filter).';
+end
+
+% run the ANC control
 src = src_control;
 run('anc_system.m');
 
@@ -92,6 +134,8 @@ resRM.fpsd = fpsd;
 resRM.Pb_dB = Pb_dB;
 if exist('Pa_dB_shifted','var')
     resRM.Pa_dB = Pa_dB_shifted;
+elseif exist('Pa_used_dB','var')
+    resRM.Pa_dB = Pa_used_dB;
 elseif exist('Pa_dB','var')
     resRM.Pa_dB = Pa_dB;
 else
@@ -102,7 +146,6 @@ resRM.eval_off = eval_off;
 resRM.eval_on = eval_on;
 resRM.t = t;
 resRM.pPlot = pPlot;
-
 %% 4) ReTM estimate, then rerun same ANC control script with same source
 fprintf('[4/4] Switching estimator to ReTM and rerunning anc_system.m ...\n');
 
@@ -135,6 +178,8 @@ resReTM.fpsd = fpsd;
 resReTM.Pb_dB = Pb_dB;
 if exist('Pa_dB_shifted','var')
     resReTM.Pa_dB = Pa_dB_shifted;
+elseif exist('Pa_used_dB','var')
+    resReTM.Pa_dB = Pa_used_dB;
 elseif exist('Pa_dB','var')
     resReTM.Pa_dB = Pa_dB;
 else
