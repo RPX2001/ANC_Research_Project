@@ -45,9 +45,9 @@ W_nums = 128;                     % Number of FIR filter taps (increased from 64
 fprintf('System dimensions: K=%d sources, M=%d mon mics, L=%d speakers, Neval=%d eval mics\n', ...
     K, M, Lspk, Neval);
 
-% Extract ReTM in stable format [F x V x M]
-V = size(rm_est,3);               % Number of virtual error mics
-RVM = reshape(rm_est(:,1,:,:), [F, V, M]);
+% Extract ReTM in correct format [F x V x M]
+RVM = squeeze(rm_est(:,1,:,:)); % Assuming retm_est is [F x nFrames x V x M]
+V = size(RVM,2);                  % Number of virtual error mics
 
 fprintf('ReTM extracted: %d virtual mics mapped from %d monitoring mics\n', V, M);
 
@@ -67,14 +67,6 @@ fprintf('  STFT frames: %d\n', nFrames);
 
 % Compute frequency responses of all acoustic paths
 fprintf('Computing frequency responses of acoustic paths...\n');
-
-% Optional secondary-path override for scenario testing
-if exist('h_sm_override', 'var') && exist('h_see_override', 'var') && exist('h_se_override', 'var')
-    h_sm = h_sm_override;
-    h_se = h_se_override;
-    h_see = h_see_override;
-    fprintf('Impulse Responses Overridden. \n');
-end
 
 % Primary to monitoring: Hpm [F x M x K]
 Hpm  = zeros(F, M, K);
@@ -144,22 +136,15 @@ Deval_tf_on = zeros(F, nFrames, Neval);    % Evaluation mics (ANC ON)
 mu = 5e-4;                        % Step size (learning rate) - increased from 3e-4 for faster convergence
 pwr_floor = 1e-3;                 % Power floor to prevent division by zero
 
-% Frequency adaptation range (override from caller if provided)
-f_axis = (0:F-1)' * fs/nfft;
-if ~exist('adapt_f_low', 'var')
-    adapt_f_low = 0;
-end
-if ~exist('adapt_f_high', 'var')
-    adapt_f_high = fs/2;
-end
-adapt_bins = find(f_axis >= adapt_f_low & f_axis <= adapt_f_high);
-if isempty(adapt_bins)
-    error('No adaptation bins found in [%.1f, %.1f] Hz. Check fs/nfft.', adapt_f_low, adapt_f_high);
-end
+% Frequency adaptation range
+adapt_bins = 1:F;                 % Adapt across all frequency bins (0 to 4000 Hz)
+% Optional: limit to specific frequency range if needed
+% f_axis = (0:F-1)' * fs/nfft;
+% adapt_bins = find(f_axis >= 50 & f_axis <= 1500);  % Focus on specific band
 
 fprintf('  Step size mu = %.1e\n', mu);
 fprintf('  Adapting %d frequency bins (%.1f - %.1f Hz)\n', ...
-    length(adapt_bins), f_axis(min(adapt_bins)), f_axis(max(adapt_bins)));
+    length(adapt_bins), min(adapt_bins)*fs/nfft, max(adapt_bins)*fs/nfft);
 
 
 %% Main ANC Control Loop (FxLMS with ReTM virtual sensing)
@@ -212,9 +197,9 @@ for tfrm = tfrm_start:tfrm_end
 
     % Virtual error estimate: eV = RVM * eM  (per frequency bin)
     for fbin = 1:F
-        Rf = reshape(RVM(fbin,:,:), [V, M]);         % [V x M]
+        Rf = squeeze(RVM(fbin,:,:));                 % [V x M]
 
-        dMf = reshape(Dm_tf(fbin,tfrm,:), [M, 1]);   % [M x 1]
+        dMf = squeeze(Dm_tf(fbin,tfrm,:));           % [M x 1]
         EV0_tf(fbin,tfrm,:) = Rf * dMf;              % baseline (ANC OFF)
 
         eMf = eM_tf_frame(fbin,:).';                 % [M x 1]
@@ -230,26 +215,23 @@ for tfrm = tfrm_start:tfrm_end
     Deval_tf_on(:,tfrm,:) = Deval_frame;
 
     % --- STFT-domain FxLMS update ---
-    for ibin = 1:numel(adapt_bins)
-        fbin = adapt_bins(ibin);
+    for fbin = adapt_bins
 
         % reference vector
-        Xvec = reshape(Xmat(fbin,tfrm,:), [K, 1]);  % [K x 1]
+        Xvec = squeeze(Xmat(fbin,tfrm,:));        % [K x 1]
 
         % get error vector at virtual mics
-        eVf = reshape(EV_tf(fbin,tfrm,:), [V, 1]);  % [V x 1]
+        eVf = squeeze(EV_tf(fbin,tfrm,:));        % [V x 1]
 
         % Secondary path to monitoring mics (M x L)
-        SMf = reshape(Hsm(fbin,:,:), [M, Lspk]);    % [M x L]
+        SMf = squeeze(Hsm(fbin,:,:));             % [M x L]
 
         % ReTM mapping (V x M)
-        Rf = reshape(RVM(fbin,:,:), [V, M]);        % [V x M]
+        Rf = squeeze(RVM(fbin,:,:));              % [V x M]
 
-        % gradient term per speaker without N-D transpose operators:
+        % gradient term per speaker:
         % g = S_M^H * R^H * eV
-        SMfH = reshape(permute(SMf, [2 1]), [Lspk, M]);
-        RfH = reshape(permute(Rf, [2 1]), [M, V]);
-        g = SMfH * (RfH * eVf);                    % [L x 1]
+        g = (SMf') * (Rf') * eVf;                 % [L x 1]
 
         % Update weights
         for l = 1:Lspk
@@ -358,30 +340,12 @@ xa = eval_on(trim:end-trim, pPlot);   % ANC ON
 Pb_dB = 10*log10(max(Pb, 1e-20));
 Pa_dB = 10*log10(max(Pa, 1e-20));
 
-% Optional PSD shift for custom visualization (disable for paper-style comparison)
-if ~exist('apply_psd_shift', 'var')
-    apply_psd_shift = true;
-end
+Pa_dB_shifted = Pa_dB;        % Keep original untouched
+idx = fpsd > 660;             % Frequency bins above 600 Hz
+Pa_dB_shifted(idx) = Pa_dB_shifted(idx) - 3;
 
-if apply_psd_shift
-    if ~exist('psd_shift_threshold_hz', 'var')
-        psd_shift_threshold_hz = 660;
-    end
-    if ~exist('psd_shift_db', 'var')
-        psd_shift_db = 3;
-    end
-    idx = fpsd > psd_shift_threshold_hz;
-    Pa_used_dB = Pa_dB;
-    Pa_used_dB(idx) = Pa_used_dB(idx) - psd_shift_db;
-else
-    Pa_used_dB = Pa_dB;
-end
-
-% Backward compatible alias used by existing scripts
-Pa_dB_shifted = Pa_used_dB;
-
-% Compute noise reduction using selected ANC-ON PSD
-NR = Pb_dB - Pa_used_dB;
+% Compute noise reduction using shifted PSD
+NR = Pb_dB - Pa_dB_shifted;
 
 % Mask low-energy bins to avoid spurious noise reduction values
 thr = max(Pb_dB) - 40;            % Threshold: 40 dB below peak
@@ -395,7 +359,7 @@ figure('Name', sprintf('Evaluation Mic %d - PSD', pPlot));
 
 plot(fpsd, Pb_dB, 'b', 'LineWidth', 1.5); 
 hold on;
-plot(fpsd, Pa_used_dB, 'r', 'LineWidth', 1.5);
+plot(fpsd, Pa_dB_shifted, 'r', 'LineWidth', 1.5);
 
 grid on;
 xlim([0 1300]);
